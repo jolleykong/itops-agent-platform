@@ -30,6 +30,10 @@ export interface Server {
   gpu_count: number;                // v009 ALTER
   gpu_model: string | null;         // v009 ALTER
   os_detail: string | null;         // v009 ALTER
+  /** 连接通道：'ssh'（SSH 连接池）| 'zabbix'（Zabbix Agent，只读监控，禁止命令执行）— v062 */
+  conn_type: string;
+  /** Zabbix 侧主机 ID（conn_type='zabbix' 时的采集定位键）— v062 */
+  zabbix_hostid: string | null;
   created_at: string;
   updated_at: string;
 }

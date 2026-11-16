@@ -5,6 +5,7 @@ import { logger } from '../../../../utils/logger';
 import { sshPool } from './sshConnectionPool';
 import { logCommandHistory, updateLastConnected } from './sshHistoryRepository';
 import { type CommandResult, type ServerInfo, DEFAULT_COMMAND_TIMEOUT } from './sshTypes';
+import { zabbixMetricCollector } from '../../../monitor/services/zabbixMetricCollector';
 
 export async function executeCommand(
   serverId: string,
@@ -147,6 +148,11 @@ export async function executeCommand(
 }
 
 export async function testConnection(serverId: string): Promise<{ success: boolean; message: string }> {
+  // v062: Zabbix Agent 通道 → 用 Zabbix 接口可用性代替 SSH 探测
+  const server = serversRepo.getById(serverId) as (ServerInfo & { conn_type?: string }) | undefined;
+  if (server?.conn_type === 'zabbix') {
+    return zabbixMetricCollector.checkAvailability(serverId);
+  }
   const result = await executeCommand(serverId, 'echo "Connection test successful"', { logHistory: false });
   return {
     success: result.success,

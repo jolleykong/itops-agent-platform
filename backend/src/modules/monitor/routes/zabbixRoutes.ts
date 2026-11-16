@@ -16,11 +16,31 @@ import type { Request, Response } from 'express';
 import { Router } from 'express';
 import { zabbixService } from '../services/zabbixService';
 import { zabbixImportService } from '../services/zabbixImportService';
+import { zabbixConnectionStore } from '../services/zabbixConnectionStore';
 import { requireRole } from '../../../middleware/auth';
 import { validateBody } from '../../../middleware/validation';
 import { zabbixSchemas } from '../../../shared/schemas/apiValidation';
 
 const router = Router();
+
+/**
+ * GET /config — 读取后端持久化的 Zabbix 连接配置（token/密码掩码返回）。
+ */
+router.get('/config', async (_req: Request, res: Response) => {
+  res.json({ success: true, data: zabbixConnectionStore.getMasked() });
+});
+
+/**
+ * POST /config — 保存后端持久化的 Zabbix 连接配置（URL + 凭据）。
+ * 供定时指标采集、Zabbix Agent 通道服务器、存量回填在后端无请求上下文时使用。
+ */
+router.post('/config', validateBody(zabbixSchemas.saveConfig), requireRole('admin'), async (req: Request, res: Response) => {
+  const result = zabbixConnectionStore.save(req.body);
+  if (!result.success) {
+    return res.status(400).json({ success: false, error: result.error });
+  }
+  res.json({ success: true, data: zabbixConnectionStore.getMasked() });
+});
 
 /**
  * POST /test — 测试 Zabbix 连接（认证 + 权限探测）。

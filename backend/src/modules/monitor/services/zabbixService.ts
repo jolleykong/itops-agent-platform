@@ -57,6 +57,8 @@ export interface ZabbixHostInterface {
   type?: string;
   /** '1' = 主接口 */
   main?: string;
+  /** 接口可用性：0=未知 1=可用 2=不可用（v062 Zabbix 通道连接测试用） */
+  available?: string;
 }
 
 export interface ZabbixHostDetail extends ZabbixHost {
@@ -191,7 +193,7 @@ class ZabbixService {
     const rpcOpts = { url: opts?.url ?? '', apiToken: auth, timeoutMs: opts?.timeoutMs };
     const baseParams: Record<string, unknown> = {
       output: ['hostid', 'host', 'name', 'status'],
-      selectInterfaces: ['ip', 'dns', 'port', 'type', 'main'],
+      selectInterfaces: ['ip', 'dns', 'port', 'type', 'main', 'available'],
       selectInventory: ['os', 'os_full', 'location'],
     };
     if (hostIds && hostIds.length > 0) baseParams.hostids = hostIds;

@@ -158,12 +158,13 @@ export const serversRepo = {
   /** 创建服务器 */
   create(input: ServerCreateInput): void {
     db.prepare(
-      `INSERT INTO servers (id, name, hostname, port, username, password, private_key, use_ssh_key, description, tags, os_type, ssh_key_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO servers (id, name, hostname, port, username, password, private_key, use_ssh_key, description, tags, os_type, ssh_key_id, conn_type, zabbix_hostid)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       input.id, input.name, input.hostname, input.port || 22, input.username,
       input.password ?? null, input.private_key ?? null, input.use_ssh_key ? 1 : 0,
-      input.description ?? null, input.tags ?? null, input.os_type || 'linux', input.ssh_key_id ?? null
+      input.description ?? null, input.tags ?? null, input.os_type || 'linux', input.ssh_key_id ?? null,
+      input.conn_type || 'ssh', input.zabbix_hostid ?? null
     );
   },
 
@@ -193,6 +194,8 @@ export const serversRepo = {
            enabled = COALESCE(?, enabled),
            os_type = COALESCE(?, os_type),
            ssh_key_id = COALESCE(?, ssh_key_id),
+           conn_type = COALESCE(?, conn_type),
+           zabbix_hostid = CASE WHEN ? IS NOT NULL THEN ? ELSE zabbix_hostid END,
            updated_at = datetime('now','localtime')
        WHERE id = ?`
     ).run(
@@ -212,6 +215,9 @@ export const serversRepo = {
       input.enabled ?? null,
       input.os_type ?? null,
       input.ssh_key_id ?? null,
+      input.conn_type ?? null,
+      input.zabbix_hostid ?? null,
+      input.zabbix_hostid ?? null,
       id
     );
   },
@@ -371,16 +377,44 @@ export const serversRepo = {
     password: string | null; private_key: string | null; use_ssh_key: number;
     description: string | null; tags: string | null;
     ip_address?: string | null; os?: string | null; os_type?: string | null;
+    conn_type?: string | null; zabbix_hostid?: string | null;
   }): void {
     db.prepare(`
-      INSERT INTO servers (id, name, hostname, port, username, password, private_key, use_ssh_key, description, tags, enabled, ip_address, os, os_type)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+      INSERT INTO servers (id, name, hostname, port, username, password, private_key, use_ssh_key, description, tags, enabled, ip_address, os, os_type, conn_type, zabbix_hostid)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
     `).run(
       input.id, input.name, input.hostname, input.port, input.username,
       input.password, input.private_key, input.use_ssh_key,
       input.description, input.tags,
-      input.ip_address ?? null, input.os ?? null, input.os_type ?? 'linux'
+      input.ip_address ?? null, input.os ?? null, input.os_type ?? 'linux',
+      input.conn_type ?? 'ssh', input.zabbix_hostid ?? null
     );
+  },
+
+  /** 按 Zabbix hostid 查找服务器（导入去重/回填用，v062） */
+  getByZabbixHostid(hostid: string): ServerRecord | undefined {
+    return db.prepare('SELECT * FROM servers WHERE zabbix_hostid = ?').get(hostid) as ServerRecord | undefined;
+  },
+
+  /**
+   * 回填 Zabbix 通道字段（存量导入数据修复用，v062）。
+   * 同时清除占位假凭据（仅当未配置任何真实 SSH 凭据时）。
+   */
+  backfillZabbixChannel(id: string, hostid: string): void {
+    db.prepare(`
+      UPDATE servers
+      SET conn_type = 'zabbix',
+          zabbix_hostid = ?,
+          username = CASE
+            WHEN username = 'zabbix'
+                 AND (password IS NULL OR password = '')
+                 AND (private_key IS NULL OR private_key = '')
+                 AND (use_ssh_key = 0 OR use_ssh_key IS NULL)
+                 AND (ssh_key_id IS NULL OR ssh_key_id = '')
+            THEN '' ELSE username END,
+          updated_at = datetime('now','localtime')
+      WHERE id = ?
+    `).run(hostid, id);
   },
 
   /** 添加服务器分组映射（幂等） */

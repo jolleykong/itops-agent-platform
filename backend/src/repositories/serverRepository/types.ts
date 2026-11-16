@@ -18,6 +18,10 @@ export interface ServerCreateInput {
   tags?: string | null;
   os_type?: string;
   ssh_key_id?: string | null;
+  /** 连接通道：'ssh' | 'zabbix'（v062） */
+  conn_type?: string;
+  /** Zabbix hostid（conn_type='zabbix' 时使用，v062） */
+  zabbix_hostid?: string | null;
 }
 
 export interface ServerUpdateInput {
@@ -33,6 +37,10 @@ export interface ServerUpdateInput {
   enabled?: number;
   os_type?: string;
   ssh_key_id?: string | null;
+  /** 连接通道：'ssh' | 'zabbix'（v062） */
+  conn_type?: string;
+  /** Zabbix hostid（v062；不传=null 保持现值不变） */
+  zabbix_hostid?: string | null;
 }
 
 // ── server_groups / server_group_mapping 类型 ──

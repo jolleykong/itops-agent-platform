@@ -16,6 +16,8 @@ interface FormData {
   os_type: 'linux' | 'windows';
   vnc_port: number;
   vnc_password: string;
+  conn_type: 'ssh' | 'zabbix';
+  zabbix_hostid: string;
 }
 
 interface ServerFormModalProps {
@@ -134,19 +136,59 @@ export function ServerFormModal({
                 <option value="windows">Windows</option>
               </select>
             </div>
+            {/* 连接通道（v062）：zabbix 通道只读监控，不持有 SSH 凭据 */}
             <div>
-              <label className="block text-sm font-medium text-text-secondary mb-2">用户名 *</label>
-              <input
-                type="text"
-                value={formData.username}
-                onChange={(e) => updateField('username', e.target.value)}
-                placeholder="例如: root"
+              <label className="block text-sm font-medium text-text-secondary mb-2">连接通道</label>
+              <select
+                value={formData.conn_type}
+                onChange={(e) => {
+                  const v = e.target.value as 'ssh' | 'zabbix';
+                  onFormDataChange({
+                    ...formData,
+                    conn_type: v,
+                    port: v === 'zabbix' ? 10050 : 22,
+                    username: v === 'zabbix' ? '' : formData.username,
+                  });
+                }}
                 className="w-full px-4 py-2 bg-background border border-border rounded-lg focus:outline-none focus:border-primary text-text-primary"
-                required
-              />
+              >
+                <option value="ssh">SSH（可执行命令）</option>
+                <option value="zabbix">Zabbix Agent（只读监控）</option>
+              </select>
+              {formData.conn_type === 'zabbix' && (
+                <p className="mt-1 text-xs text-text-tertiary">
+                  监控数据经 Zabbix API 采集（需在 监控 → Zabbix 查询 中保存后端连接配置）；不支持终端/命令执行。
+                </p>
+              )}
             </div>
+            {formData.conn_type === 'zabbix' ? (
+              <div>
+                <label className="block text-sm font-medium text-text-secondary mb-2">Zabbix HostID（可选）</label>
+                <input
+                  type="text"
+                  value={formData.zabbix_hostid}
+                  onChange={(e) => updateField('zabbix_hostid', e.target.value.trim())}
+                  placeholder="例如: 10625（从 Zabbix 导入会自动填写）"
+                  className="w-full px-4 py-2 bg-background border border-border rounded-lg focus:outline-none focus:border-primary text-text-primary"
+                />
+              </div>
+            ) : (
+              <div>
+                <label className="block text-sm font-medium text-text-secondary mb-2">用户名 *</label>
+                <input
+                  type="text"
+                  value={formData.username}
+                  onChange={(e) => updateField('username', e.target.value)}
+                  placeholder="例如: root"
+                  className="w-full px-4 py-2 bg-background border border-border rounded-lg focus:outline-none focus:border-primary text-text-primary"
+                  required
+                />
+              </div>
+            )}
           </div>
 
+          {formData.conn_type === 'ssh' && (
+          <>
           <div className="flex items-center gap-2">
             <input
               type="checkbox"
@@ -188,6 +230,8 @@ export function ServerFormModal({
                 closeModal={onClose}
               />
             </div>
+          )}
+          </>
           )}
 
           <div>

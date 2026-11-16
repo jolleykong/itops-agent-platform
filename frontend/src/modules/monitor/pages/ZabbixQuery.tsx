@@ -8,7 +8,7 @@
  * 响应格式：{ success, data: { result: any[] }, error }。
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import clsx from 'clsx';
 import {
   Activity,
@@ -114,6 +114,48 @@ export default function ZabbixQuery() {
   const [importBusy, setImportBusy] = useState(false);
   const [importDone, setImportDone] = useState<string | null>(null);
 
+  // 后端持久化连接配置（Zabbix Agent 通道定时采集用）
+  const [backendHint, setBackendHint] = useState<string | null>(null);
+  const [savingConfig, setSavingConfig] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const { data } = await api.get('/monitor/zabbix/config');
+        if (data?.url) {
+          setBackendHint(`后端已配置：${data.url}${data.hasApiToken ? `（Token ${data.apiTokenHint}）` : data.username ? `（用户 ${data.username}）` : '（无凭据）'}`);
+          setCfg((prev) => (prev.url ? prev : { ...prev, url: data.url }));
+        }
+      } catch {
+        // 后端未配置/无权限时静默
+      }
+    })();
+  }, []);
+
+  const saveConfigToBackend = async () => {
+    if (!cfg.url.trim()) {
+      message.warning('请先填写 Zabbix URL');
+      return;
+    }
+    setSavingConfig(true);
+    try {
+      const payload: Record<string, unknown> = { url: cfg.url.trim(), timeoutMs: cfg.timeoutMs };
+      if (cfg.authMode === 'token' && cfg.apiToken) payload.apiToken = cfg.apiToken;
+      if (cfg.authMode === 'password') {
+        if (cfg.username) payload.username = cfg.username;
+        if (cfg.password) payload.password = cfg.password;
+      }
+      await api.post('/monitor/zabbix/config', payload);
+      message.success('已保存到后端：Zabbix Agent 通道采集将使用此配置');
+      const { data } = await api.get('/monitor/zabbix/config');
+      setBackendHint(data?.url ? `后端已配置：${data.url}${data.hasApiToken ? `（Token ${data.apiTokenHint}）` : ''}` : null);
+    } catch (err) {
+      message.error(getAxiosErrorMessage(err, '保存后端配置失败（需要 admin 角色）'));
+    } finally {
+      setSavingConfig(false);
+    }
+  };
+
   const canQuery = useMemo(() => cfg.url.trim().length > 0, [cfg.url]);
 
   // ============ 导入主机 ============
@@ -159,7 +201,7 @@ export default function ZabbixQuery() {
         hostIds: [...importSelected],
       });
       const summary = data
-        ? `导入成功 ${data.imported} 台，跳过 ${data.skipped} 台${data.failed ? `，失败 ${data.failed} 台` : ''}`
+        ? `导入成功 ${data.imported} 台${data.backfilled ? `，回填 ${data.backfilled} 台` : ''}，跳过 ${data.skipped} 台${data.failed ? `，失败 ${data.failed} 台` : ''}`
         : '导入完成';
       setImportDone(summary);
       // 刷新预览，已导入的会显示为 duplicate
@@ -270,16 +312,33 @@ export default function ZabbixQuery() {
           <h3 className="text-sm font-medium text-text-secondary flex items-center gap-2">
             <Plug size={16} /> 连接配置
           </h3>
-          <button
-            type="button"
-            onClick={handleTest}
-            disabled={!canQuery || loading}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/10 text-primary text-xs font-medium hover:bg-primary/20 disabled:opacity-50"
-          >
-            {loading ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
-            测试连接
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={saveConfigToBackend}
+              disabled={!canQuery || savingConfig}
+              title="保存到后端数据库，供 Zabbix Agent 通道服务器定时采集使用（需要 admin 角色）"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface border border-border text-text-secondary text-xs font-medium hover:bg-background disabled:opacity-50"
+            >
+              {savingConfig ? <Loader2 size={14} className="animate-spin" /> : <Database size={14} />}
+              保存到后端
+            </button>
+            <button
+              type="button"
+              onClick={handleTest}
+              disabled={!canQuery || loading}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/10 text-primary text-xs font-medium hover:bg-primary/20 disabled:opacity-50"
+            >
+              {loading ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+              测试连接
+            </button>
+          </div>
         </div>
+        {backendHint && (
+          <p className="text-xs text-emerald-500 flex items-center gap-1">
+            <CheckCircle2 size={12} /> {backendHint}
+          </p>
+        )}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
           <div className="lg:col-span-2">
             <label className="block text-xs text-text-secondary mb-1">Zabbix API URL</label>
@@ -583,10 +642,12 @@ export default function ZabbixQuery() {
                       <td className="py-2 pr-2 text-xs">
                         {r.status === 'duplicate' ? (
                           <span className="text-text-tertiary">已存在，跳过</span>
+                        ) : r.status === 'backfill' ? (
+                          <span className="text-amber-500">已存在，将回填为 Zabbix 通道</span>
                         ) : r.status === 'failed' ? (
                           <span className="text-status-failed">{r.error ?? '失败'}</span>
                         ) : (
-                          <span className="text-emerald-500">可导入</span>
+                          <span className="text-emerald-500">可导入（Zabbix Agent 通道）</span>
                         )}
                       </td>
                     </tr>
@@ -595,7 +656,9 @@ export default function ZabbixQuery() {
               </table>
             )}
             <p className="text-xs text-text-tertiary">
-              导入说明：主机以 IP/DNS 作为地址写入「服务器管理」，SSH 端口默认 22、用户名占位为 zabbix（无凭据，需后续补全），标签带 zabbix 与所属主机组。
+              导入说明：主机以 Zabbix Agent 通道（conn_type=zabbix）写入「服务器管理」，监控数据经 Zabbix API 只读采集，
+              平台不持有 SSH 凭据；终端/命令执行对此类设备不可用。标签带 zabbix 与所属主机组。
+              此前旧版导入的记录（SSH 占位）会被自动回填为 Zabbix 通道。
             </p>
           </div>
         )}

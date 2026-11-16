@@ -4,13 +4,17 @@
  * 从 Zabbix API 拉取主机清单（含接口/主机组/inventory），
  * 映射为平台 servers 表记录并写入。
  *
- * 映射规则：
+ * 映射规则（v062 起默认走 Zabbix Agent 通道，不持有 SSH 凭据）：
+ *   - conn_type：'zabbix'（监控数据经 Zabbix API 采集，禁止 SSH 命令执行）
+ *   - zabbix_hostid：Zabbix 侧主机 ID（采集定位键）
  *   - hostname：主接口 IP（无 IP 用 DNS，再退回 Zabbix 技术主机名）
- *   - port：22（servers 表面向 SSH 管理，Zabbix Agent 端口不适用）
- *   - username：占位 'zabbix'（servers.username NOT NULL，用户后续补真实 SSH 凭据）
+ *   - port：10050（Zabbix Agent 端口，仅作展示；通道不走 SSH）
+ *   - username：''（不再写 'zabbix' 占位假凭据）
  *   - tags：['zabbix', ...主机组名]
  *   - description：标注导入来源与 Zabbix hostid
- *   - 去重：按 hostname+port 判断，已存在则跳过
+ *   - 去重/回填：
+ *     1) 按 zabbix_hostid 精确匹配 → 已是 zabbix 通道则跳过；否则回填通道字段（存量修复）
+ *     2) 按 hostname+port 匹配（手工 SSH 服务器）→ 跳过
  */
 
 import { randomUUID } from 'crypto';
@@ -37,7 +41,7 @@ export interface ZabbixImportDetail {
   ip: string;
   groups: string[];
   os: string;
-  /** preview | duplicate | success | failed */
+  /** preview | duplicate | backfill | success | failed */
   status: string;
   error?: string;
 }
@@ -45,10 +49,15 @@ export interface ZabbixImportDetail {
 export interface ZabbixImportResult {
   total: number;
   imported: number;
+  /** 存量服务器回填为 zabbix 通道的数量 */
+  backfilled: number;
   skipped: number;
   failed: number;
   details: ZabbixImportDetail[];
 }
+
+/** Zabbix Agent 端口（仅展示用，conn_type='zabbix' 不走 SSH） */
+const ZABBIX_AGENT_PORT = 10050;
 
 /** 取主接口 IP/DNS：优先 Agent(type=1) 主接口，其次任意主接口，最后第一条 */
 function pickPrimaryAddress(host: ZabbixHostDetail): { address: string; isIp: boolean } {
@@ -90,6 +99,7 @@ class ZabbixImportService {
     const result: ZabbixImportResult = {
       total: fetched.data.length,
       imported: 0,
+      backfilled: 0,
       skipped: 0,
       failed: 0,
       details: [],
@@ -114,11 +124,28 @@ class ZabbixImportService {
       };
 
       try {
-        // 去重：servers.hostname + port 22
+        // 1) hostid 精确匹配（此前 Zabbix 导入过的记录，含 v062 前的存量）
+        const byHostid = serversRepo.getByZabbixHostid(host.hostid);
+        if (byHostid) {
+          if (byHostid.conn_type === 'zabbix') {
+            result.skipped++;
+            result.details.push({ ...base, status: 'duplicate', error: '该 hostid 已导入且为 zabbix 通道' });
+          } else {
+            // 存量 SSH/占位记录 → 回填通道字段并清占位假凭据
+            if (!opts.dryRun) {
+              serversRepo.backfillZabbixChannel(byHostid.id, host.hostid);
+            }
+            result.backfilled++;
+            result.details.push({ ...base, status: 'backfill', error: '已存在同主机记录，将回填为 zabbix 通道' });
+          }
+          continue;
+        }
+
+        // 2) 手工添加的 SSH 服务器（同 hostname+port 10050 不会撞，但同 hostname+22 会撞 → 保留原样）
         const existing = serversRepo.checkDuplicateByHostnameAndPort(address, 22);
         if (existing) {
           result.skipped++;
-          result.details.push({ ...base, status: 'duplicate', error: '平台已存在同地址服务器' });
+          result.details.push({ ...base, status: 'duplicate', error: '平台已存在同地址 SSH 服务器（如需统一为 zabbix 通道请单独处理）' });
           continue;
         }
 
@@ -132,8 +159,8 @@ class ZabbixImportService {
           id,
           name: displayName,
           hostname: address,
-          port: 22,
-          username: 'zabbix',
+          port: ZABBIX_AGENT_PORT,
+          username: '',
           password: null,
           private_key: null,
           use_ssh_key: 0,
@@ -141,6 +168,8 @@ class ZabbixImportService {
           tags: ['zabbix', ...groupNameList],
           ip_address: address,
           os: os || null,
+          conn_type: 'zabbix',
+          zabbix_hostid: host.hostid,
         });
 
         result.imported++;

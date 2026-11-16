@@ -19,6 +19,9 @@ export interface Server {
   private_ip?: string;
   ssh_key_id?: string;
   vnc_port?: number;
+  /** 连接通道：ssh（SSH 连接池）| zabbix（Zabbix Agent 只读监控） */
+  conn_type?: 'ssh' | 'zabbix';
+  zabbix_hostid?: string | null;
   groups?: Array<{ id: string; name: string }>;
 }
 

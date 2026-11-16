@@ -107,6 +107,15 @@ export class TerminalService {
       return { sessionId: '', shell: null as unknown as ClientChannel, error: 'Server is disabled' };
     }
 
+    // v062: Zabbix Agent 通道服务器无 SSH 凭据，禁止终端会话
+    if (server.conn_type === 'zabbix') {
+      return {
+        sessionId: '',
+        shell: null as unknown as ClientChannel,
+        error: '该服务器为 Zabbix Agent 通道（conn_type=zabbix），不支持 SSH 终端。监控数据请查看服务器详情/监控页面。',
+      };
+    }
+
     const decryptedPassword = server.password ? decrypt(server.password) : undefined;
     const decryptedPrivateKey = server.private_key ? decrypt(server.private_key) : undefined;
 

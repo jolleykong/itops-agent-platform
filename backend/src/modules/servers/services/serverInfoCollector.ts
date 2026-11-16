@@ -5,6 +5,7 @@ import { logger } from '../../../utils/logger';
 import { v4 as uuidv4 } from 'uuid';
 import type { OSType } from '../../scripts/services/commandDispatcher';
 import { getCommandTemplates, detectOSType } from '../../scripts/services/commandDispatcher';
+import { zabbixMetricCollector } from '../../monitor/services/zabbixMetricCollector';
 
 interface ServerInfo {
   id: string;
@@ -16,6 +17,9 @@ interface ServerInfo {
   private_key: string | null;
   use_ssh_key: number;
   enabled: number;
+  /** v062: 'ssh' | 'zabbix' */
+  conn_type?: string;
+  zabbix_hostid?: string | null;
 }
 
 interface ServerInfoResult {
@@ -60,6 +64,26 @@ class ServerInfoCollector {
 
     if (!server?.enabled) {
       return { success: false, error: 'Server not found or disabled' };
+    }
+
+    // v062: Zabbix Agent 通道 → 走 Zabbix API 采集（item.get 最新值 + OS 探测）
+    if (server.conn_type === 'zabbix') {
+      const result = await zabbixMetricCollector.collectServerInfo(serverId);
+      if (!result.success) {
+        return { success: false, error: result.error };
+      }
+      const updated = serversRepo.getById(serverId) as (ServerInfo & { cpu_cores?: number; memory_gb?: number; disk_gb?: number; ip_address?: string; private_ip?: string; os?: string }) | undefined;
+      return {
+        success: true,
+        data: {
+          os: updated?.os ?? 'Unknown',
+          cpu_cores: updated?.cpu_cores ?? 0,
+          memory_gb: updated?.memory_gb ?? 0,
+          disk_gb: updated?.disk_gb ?? 0,
+          ip_address: updated?.ip_address ?? '',
+          private_ip: updated?.private_ip ?? updated?.ip_address ?? '',
+        },
+      };
     }
 
     let conn: Client | null = null;
@@ -200,6 +224,15 @@ class ServerInfoCollector {
 
     if (!server?.enabled) {
       return { success: false, error: 'Server not found or disabled' };
+    }
+
+    // v062: Zabbix Agent 通道 → 走 Zabbix API 采集（指标已写入 server_metrics）
+    if (server.conn_type === 'zabbix') {
+      const result = await zabbixMetricCollector.collectServerMetrics(serverId);
+      if (!result.success) {
+        return { success: false, error: result.error };
+      }
+      return { success: true };
     }
 
     let conn: Client | null = null;

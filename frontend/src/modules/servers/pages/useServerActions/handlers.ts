@@ -181,6 +181,8 @@ export function useServerActionsHandlers(
       os_type: server.os_type === 'windows' ? 'windows' : 'linux',
       vnc_port: server.vnc_port || 5900,
       vnc_password: '',
+      conn_type: server.conn_type === 'zabbix' ? 'zabbix' : 'ssh',
+      zabbix_hostid: server.zabbix_hostid || '',
     });
     setIsModalOpen(true);
   };

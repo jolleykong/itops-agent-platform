@@ -17,8 +17,8 @@ export const serverSchemas = {
   createServer: z.object({
     name: z.string().min(1, '服务器名称不能为空').max(100),
     hostname: z.string().min(1, '主机名不能为空').max(255),
-    port: z.coerce.number().int().min(1).max(65535).default(22),
-    username: z.string().min(1, '用户名不能为空').max(64),
+    port: z.coerce.number().int().min(0).max(65535).default(22),
+    username: z.string().max(64).default(''),
     password: z.string().max(255).optional(),
     private_key: z.string().optional(),
     use_ssh_key: z.coerce.number().int().min(0).max(1).default(0),
@@ -26,12 +26,15 @@ export const serverSchemas = {
     os_type: z.enum(['linux', 'windows', 'unknown']).default('linux'),
     tags: z.array(z.string()).optional(),
     ssh_key_id: z.string().uuid().optional(),
+    // v062 连接通道：ssh（默认）| zabbix（Zabbix Agent 只读监控通道，无 SSH 凭据）
+    conn_type: z.enum(['ssh', 'zabbix']).default('ssh'),
+    zabbix_hostid: z.string().max(100).optional(),
   }),
   updateServer: z.object({
     name: z.string().min(1).max(100).optional(),
     hostname: z.string().min(1).max(255).optional(),
-    port: z.coerce.number().int().min(1).max(65535).optional(),
-    username: z.string().min(1).max(64).optional(),
+    port: z.coerce.number().int().min(0).max(65535).optional(),
+    username: z.string().max(64).optional(),
     password: z.string().max(255).optional(),
     use_ssh_key: z.coerce.number().int().min(0).max(1).optional(),
     description: z.string().max(500).optional(),
@@ -39,6 +42,8 @@ export const serverSchemas = {
     os_type: z.enum(['linux', 'windows', 'unknown']).optional(),
     tags: z.array(z.string()).optional(),
     ssh_key_id: z.string().uuid().optional(),
+    conn_type: z.enum(['ssh', 'zabbix']).optional(),
+    zabbix_hostid: z.string().max(100).nullable().optional(),
   }),
   serverId: z.object({
     id: z.string().uuid('无效的服务器ID'),
@@ -510,6 +515,15 @@ export const zabbixSchemas = {
     severity: z.array(z.number().int().min(0).max(10)).optional(),
     recent: z.boolean().optional(),
     limit: z.number().int().min(1).max(10000).optional(),
+  }),
+  // Zabbix 连接配置持久化（v062）：保存用。undefined 字段=不修改，''=删除该项。
+  // 保存时凭据可选（只在需要覆盖时传）；读取走 GET /config（掩码返回，无需 schema）。
+  saveConfig: z.object({
+    url: z.string().max(500).optional(),
+    apiToken: z.string().max(2000).optional(),
+    username: z.string().max(255).optional(),
+    password: z.string().max(255).optional(),
+    timeoutMs: z.union([z.number().int().min(1000).max(120000), z.string().max(10)]).optional(),
   }),
 };
 

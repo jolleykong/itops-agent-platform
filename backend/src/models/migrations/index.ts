@@ -118,6 +118,8 @@ import v059DcPolymorphicFk from './v059_dc_polymorphic_fk';
 import v060AgentExecutionsArchive from './v060_agent_executions_archive';
 // === CMDB 同步表 v061 ===
 import v061CmdbSyncTables from './v061_cmdb_sync_tables';
+// === 服务器连接通道（Zabbix Agent）v062 ===
+import v062ServerConnType from './v062_server_conn_type';
 
 // Helper: wrap sync up/down into async
 function wrapAsync(fn: (db: any) => void): (db: any) => Promise<void> {
@@ -374,6 +376,8 @@ export const ALL_MIGRATIONS: Migration[] = [
   v060AgentExecutionsArchive,
   // v061: CMDB 同步状态与日志表
   v061CmdbSyncTables,
+  // v062: 服务器连接通道（SSH / Zabbix Agent）
+  v062ServerConnType,
 ];
 
 export function createMigrationManager(db: any): MigrationManager {

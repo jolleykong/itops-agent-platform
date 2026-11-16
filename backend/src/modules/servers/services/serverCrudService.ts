@@ -30,6 +30,8 @@ export type ServerCreateInput = {
   tags?: string[];
   os_type?: string;
   ssh_key_id?: string;
+  conn_type?: string;
+  zabbix_hostid?: string;
 };
 
 export type ServerUpdateInput = Partial<ServerCreateInput> & { enabled?: number };
@@ -85,6 +87,9 @@ export const serverCrudService = {
       tags: tagsJson,
       os_type: input.os_type || 'linux',
       ssh_key_id: input.ssh_key_id || null,
+      // v062 连接通道
+      conn_type: input.conn_type === 'zabbix' ? 'zabbix' : 'ssh',
+      zabbix_hostid: input.zabbix_hostid || null,
     });
     return { success: true, data: { id } };
   },
@@ -128,6 +133,9 @@ export const serverCrudService = {
       enabled: input.enabled,
       os_type: input.os_type,
       ssh_key_id: input.ssh_key_id !== undefined ? input.ssh_key_id : undefined,
+      // v062 连接通道
+      conn_type: input.conn_type,
+      zabbix_hostid: input.zabbix_hostid !== undefined ? input.zabbix_hostid : undefined,
     });
     return { success: true };
   },

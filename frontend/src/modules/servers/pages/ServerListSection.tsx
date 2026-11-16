@@ -249,7 +249,17 @@ export function ServerListSection({
                         />
                       </div>
                       <div className="min-w-0">
-                        <h3 className="font-medium text-text-primary truncate">{server.name}</h3>
+                        <h3 className="font-medium text-text-primary truncate">
+                          {server.name}
+                          {server.conn_type === 'zabbix' && (
+                            <span
+                              className="ml-1.5 inline-flex items-center px-1.5 py-0.5 bg-purple-500/10 text-purple-500 text-[10px] rounded align-middle"
+                              title="Zabbix Agent 通道：只读监控，不支持 SSH 命令执行"
+                            >
+                              ZBX
+                            </span>
+                          )}
+                        </h3>
                         <p className="text-xs text-text-secondary truncate">
                           {server.hostname}:{server.port}
                         </p>
