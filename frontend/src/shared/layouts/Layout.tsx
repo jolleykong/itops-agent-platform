@@ -263,7 +263,12 @@ export default function Layout() {
               </button>
 
               {expandedGroups.has(group.name) && (
-                <div className="pl-1 space-y-0.5">
+                <div
+                  className={clsx(
+                    'ml-3.5 pl-2.5 space-y-0.5 border-l',
+                    theme === 'dark' ? 'border-slate-700/60' : 'border-gray-200',
+                  )}
+                >
                   {group.items.map((item) => (
                     <NavLink
                       key={item.name}
@@ -271,7 +276,7 @@ export default function Layout() {
                       end
                       className={({ isActive }) =>
                         clsx(
-                          'flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[13px] font-medium transition-all duration-200 group',
+                          'flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-[12px] font-medium transition-all duration-200 group',
                           isActive
                             ? 'bg-gradient-to-r from-blue-600 to-blue-700 text-white shadow-lg shadow-blue-500/25'
                             : theme === 'dark'
