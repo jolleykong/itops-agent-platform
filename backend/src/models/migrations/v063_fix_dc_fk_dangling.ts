@@ -32,6 +32,12 @@ const v063FixDcFkDangling: Migration = {
     db.exec(`PRAGMA foreign_keys=OFF;`);
 
     try {
+      // DROP TABLE 时 SQLite 会重新校验引用该表的触发器，必须先摘掉再恢复
+      const slotTrigger = (db.prepare(`SELECT sql FROM sqlite_master WHERE type='trigger' AND name='trg_servers_delete_clear_slots'`).get() as { sql: string } | undefined)?.sql || '';
+      if (slotTrigger) {
+        db.exec(`DROP TRIGGER IF EXISTS trg_servers_delete_clear_slots;`);
+      }
+
       // ── dc_rack_slots ──
       const slotsDdl = getDdl('dc_rack_slots');
       if (slotsDdl && slotsDdl.includes('_dc_racks_backup')) {
@@ -97,6 +103,11 @@ const v063FixDcFkDangling: Migration = {
         logger.info('  ✓ dc_power_feeds FK already correct');
       }
     } finally {
+      // 恢复服务器删除时清理机柜 U 位的触发器
+      if (slotTrigger) {
+        db.exec(slotTrigger);
+        logger.info('  ✓ trigger trg_servers_delete_clear_slots restored');
+      }
       db.exec(`PRAGMA foreign_keys=ON;`);
     }
 
