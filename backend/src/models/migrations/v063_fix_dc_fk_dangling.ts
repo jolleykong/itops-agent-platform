@@ -31,11 +31,15 @@ const v063FixDcFkDangling: Migration = {
 
     db.exec(`PRAGMA foreign_keys=OFF;`);
 
-    // DROP TABLE 时 SQLite 会重新校验引用该表的触发器，必须先摘掉再恢复
-    // （声明在 try 外，finally 中恢复用）
-    const slotTrigger = (db.prepare(`SELECT sql FROM sqlite_master WHERE type='trigger' AND name='trg_servers_delete_clear_slots'`).get() as { sql: string } | undefined)?.sql || '';
-    if (slotTrigger) {
-      db.exec(`DROP TRIGGER IF EXISTS trg_servers_delete_clear_slots;`);
+    // DROP TABLE 时 SQLite 会重新校验所有引用该表的触发器，
+    // 必须先摘掉引用 dc_rack_slots / dc_power_feeds 的全部触发器，重建后逐一恢复
+    const affectedTriggers = (db.prepare(`
+      SELECT name, sql FROM sqlite_master
+      WHERE type='trigger' AND (sql LIKE '%dc_rack_slots%' OR sql LIKE '%dc_power_feeds%')
+    `).all() as Array<{ name: string; sql: string }>);
+    for (const t of affectedTriggers) {
+      logger.info(`  → temporarily dropping trigger ${t.name}`);
+      db.exec(`DROP TRIGGER IF EXISTS "${t.name}";`);
     }
 
     try {
@@ -104,10 +108,12 @@ const v063FixDcFkDangling: Migration = {
         logger.info('  ✓ dc_power_feeds FK already correct');
       }
     } finally {
-      // 恢复服务器删除时清理机柜 U 位的触发器
-      if (slotTrigger) {
-        db.exec(slotTrigger);
-        logger.info('  ✓ trigger trg_servers_delete_clear_slots restored');
+      // 逐个恢复摘除的触发器
+      for (const t of affectedTriggers) {
+        if (t.sql) {
+          db.exec(t.sql);
+          logger.info(`  ✓ trigger ${t.name} restored`);
+        }
       }
       db.exec(`PRAGMA foreign_keys=ON;`);
     }
