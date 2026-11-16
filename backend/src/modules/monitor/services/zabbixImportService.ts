@@ -20,6 +20,7 @@
 import { randomUUID } from 'crypto';
 import { serversRepo } from '../../../repositories/serverRepository';
 import { zabbixService, type ZabbixHostDetail } from './zabbixService';
+import { zabbixConnectionStore } from './zabbixConnectionStore';
 import { logger } from '../../../utils/logger';
 
 export interface ZabbixImportOptions {
@@ -74,23 +75,31 @@ function pickPrimaryAddress(host: ZabbixHostDetail): { address: string; isIp: bo
 
 class ZabbixImportService {
   async importHosts(opts: ZabbixImportOptions): Promise<ZabbixImportResult> {
-    if (!opts.url) {
-      throw new Error('Zabbix URL 不能为空');
+    // 认证回退：请求未带认证信息时，使用后端持久化的连接配置
+    // （前端 localStorage 的 cfg 可能丢失 Token，用户只需在 UI 点一次「保存到后端」）
+    const saved = zabbixConnectionStore.get();
+    const url = opts.url?.trim() || saved?.url || '';
+    if (!url) {
+      throw new Error('Zabbix URL 不能为空（请求与后端保存的连接配置均未提供）');
     }
 
+    const apiToken = opts.apiToken?.trim() || saved?.apiToken;
+    let username = opts.username?.trim() || saved?.username;
+    const password = opts.password || saved?.password;
+
     // 认证：优先 API Token；否则 username/password 换 session token
-    let auth = opts.apiToken;
+    let auth = apiToken;
     if (!auth) {
-      const login = await zabbixService.login(opts);
+      const login = await zabbixService.login({ url, username, password, timeoutMs: opts.timeoutMs ?? saved?.timeoutMs });
       if (!login.success || !login.auth) {
-        throw new Error(login.error ?? 'Zabbix 认证失败');
+        throw new Error(login.error ?? 'Zabbix 认证失败（API Token 与用户名密码均未提供或无效）');
       }
       auth = login.auth;
     }
 
     const fetched = await zabbixService.getHostsDetail(auth, opts.hostIds, {
-      url: opts.url,
-      timeoutMs: opts.timeoutMs,
+      url,
+      timeoutMs: opts.timeoutMs ?? saved?.timeoutMs,
     });
     if (!fetched.success || !fetched.data) {
       throw new Error(fetched.error ?? 'host.get 拉取失败');

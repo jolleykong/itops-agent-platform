@@ -85,15 +85,32 @@ async function callZabbix<T>(endpoint: string, payload: Record<string, unknown>)
 
 // ==================== 主组件 ====================
 
+// 连接配置本地持久化（密码不落盘，token 存 localStorage 便于日常使用；
+// 更安全的做法是点「保存到后端」，凭据加密存后端，前端只留 URL）
+const CFG_STORAGE_KEY = 'zabbix-query-cfg';
+
+function loadInitialCfg(): ConnectionConfig {
+  try {
+    const raw = localStorage.getItem(CFG_STORAGE_KEY);
+    if (raw) {
+      const saved = JSON.parse(raw) as Partial<ConnectionConfig>;
+      return {
+        url: saved.url ?? '',
+        username: saved.username ?? '',
+        password: '',
+        apiToken: saved.apiToken ?? '',
+        authMode: saved.authMode === 'token' ? 'token' : 'password',
+        timeoutMs: saved.timeoutMs ?? 15000,
+      };
+    }
+  } catch {
+    // 忽略损坏的存储
+  }
+  return { url: '', username: '', password: '', apiToken: '', authMode: 'token', timeoutMs: 15000 };
+}
+
 export default function ZabbixQuery() {
-  const [cfg, setCfg] = useState<ConnectionConfig>({
-    url: '',
-    username: '',
-    password: '',
-    apiToken: '',
-    authMode: 'password',
-    timeoutMs: 15000,
-  });
+  const [cfg, setCfg] = useState<ConnectionConfig>(loadInitialCfg);
   const [tab, setTab] = useState<TabKey>('hosts');
   const [loading, setLoading] = useState(false);
   const [hosts, setHosts] = useState<ZabbixHost[]>([]);
@@ -117,6 +134,14 @@ export default function ZabbixQuery() {
   // 后端持久化连接配置（Zabbix Agent 通道定时采集用）
   const [backendHint, setBackendHint] = useState<string | null>(null);
   const [savingConfig, setSavingConfig] = useState(false);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(CFG_STORAGE_KEY, JSON.stringify({ ...cfg, password: '' }));
+    } catch {
+      // 存储不可用时忽略
+    }
+  }, [cfg]);
 
   useEffect(() => {
     (async () => {
@@ -181,7 +206,7 @@ export default function ZabbixQuery() {
     } catch (err) {
       const msg = getAxiosErrorMessage(err, '获取导入预览失败');
       setError(msg);
-      message.error(msg);
+      message.error(/认证|login|Token|凭据/i.test(msg) ? `${msg} — 请在连接配置中填写 API Token 并点「保存到后端」` : msg);
     } finally {
       setImportBusy(false);
     }
@@ -210,7 +235,7 @@ export default function ZabbixQuery() {
     } catch (err) {
       const msg = getAxiosErrorMessage(err, '导入失败');
       setError(msg);
-      message.error(msg);
+      message.error(/认证|login|Token|凭据/i.test(msg) ? `${msg} — 请在连接配置中填写 API Token 并点「保存到后端」` : msg);
     } finally {
       setImportBusy(false);
     }
