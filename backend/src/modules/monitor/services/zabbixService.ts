@@ -61,6 +61,9 @@ export interface ZabbixHostInterface {
 
 export interface ZabbixHostDetail extends ZabbixHost {
   interfaces?: ZabbixHostInterface[];
+  /** Zabbix 7.0+（selectHostGroups） */
+  hostgroups?: Array<{ groupid?: string; name: string }>;
+  /** Zabbix ≤6.4（selectGroups） */
   groups?: Array<{ groupid: string; name: string }>;
   inventory?: { os?: string; os_full?: string; location?: string };
 }
@@ -177,25 +180,34 @@ class ZabbixService {
 
   /**
    * host.get（导入用）：主机 + 接口 + 主机组 + inventory 一次拉齐。
+   * 兼容性：Zabbix 7.0+ 用 selectHostGroups（ZBXNEXT-8382 改名），
+   * ≤6.4 只认 selectGroups —— 先用新参数，遇 -32602 自动回退旧参数。
    */
   async getHostsDetail(
     auth: string,
     hostIds?: string[],
     opts?: ZabbixClientOptions
   ): Promise<ZabbixRpcResult<ZabbixHostDetail[]>> {
-    const params: Record<string, unknown> = {
+    const rpcOpts = { url: opts?.url ?? '', apiToken: auth, timeoutMs: opts?.timeoutMs };
+    const baseParams: Record<string, unknown> = {
       output: ['hostid', 'host', 'name', 'status'],
       selectInterfaces: ['ip', 'dns', 'port', 'type', 'main'],
-      selectGroups: ['groupid', 'name'],
       selectInventory: ['os', 'os_full', 'location'],
     };
-    if (hostIds && hostIds.length > 0) params.hostids = hostIds;
+    if (hostIds && hostIds.length > 0) baseParams.hostids = hostIds;
 
-    return this.rpcRequest<ZabbixHostDetail[]>('host.get', params, {
-      url: opts?.url ?? '',
-      apiToken: auth,
-      timeoutMs: opts?.timeoutMs,
-    });
+    // Zabbix 7.0+ 优先
+    const modern = await this.rpcRequest<ZabbixHostDetail[]>('host.get', {
+      ...baseParams,
+      selectHostGroups: ['groupid', 'name'],
+    }, rpcOpts);
+    if (modern.success) return modern;
+
+    // ≤6.4 回退（selectGroups）
+    return this.rpcRequest<ZabbixHostDetail[]>('host.get', {
+      ...baseParams,
+      selectGroups: ['groupid', 'name'],
+    }, rpcOpts);
   }
 
   /**

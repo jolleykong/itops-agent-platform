@@ -96,7 +96,9 @@ class ZabbixImportService {
     };
 
     for (const host of fetched.data) {
-      const groupNameList = (host.groups ?? []).map((g) => g.name).filter(Boolean);
+      const groupNameList = (host.hostgroups ?? host.groups ?? [])
+        .map((g) => g.name)
+        .filter(Boolean);
       const { address } = pickPrimaryAddress(host);
       const displayName = host.name?.trim() || host.host;
       const os = host.inventory?.os?.trim() || host.inventory?.os_full?.trim() || '';
