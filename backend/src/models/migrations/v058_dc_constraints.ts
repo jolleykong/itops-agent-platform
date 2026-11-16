@@ -64,15 +64,16 @@ const v058DcConstraints: Migration = {
     }
 
     // ── 2) dc_racks.room_id FOREIGN KEY 约束 ──
+    // ⚠️ 不得用 RENAME 重建：SQLite ≥3.25 在 RENAME 时会自动改写其他表
+    // 引用本表的外键文本（dc_rack_slots / dc_power_feeds 会被改写成指向
+    // _dc_racks_backup 的死链，v063 修复过该问题）。改用 create_new + copy + drop。
     const racksHasFk = (db.prepare(`
       SELECT sql FROM sqlite_master WHERE type='table' AND name='dc_racks'
     `).get() as { sql: string } | undefined)?.sql || '';
     if (!racksHasFk.toUpperCase().includes('REFERENCES DC_ROOMS')) {
       logger.info('  → Rebuilding dc_racks with FK to dc_rooms');
       db.exec(`
-        ALTER TABLE dc_racks RENAME TO _dc_racks_backup;
-
-        CREATE TABLE dc_racks (
+        CREATE TABLE dc_racks_rebuilt (
           id TEXT PRIMARY KEY,
           room_id TEXT NOT NULL,
           name TEXT NOT NULL,
@@ -90,8 +91,9 @@ const v058DcConstraints: Migration = {
           FOREIGN KEY (room_id) REFERENCES dc_rooms(id) ON DELETE CASCADE
         );
 
-        INSERT INTO dc_racks SELECT * FROM _dc_racks_backup;
-        DROP TABLE _dc_racks_backup;
+        INSERT INTO dc_racks_rebuilt SELECT * FROM dc_racks;
+        DROP TABLE dc_racks;
+        ALTER TABLE dc_racks_rebuilt RENAME TO dc_racks;
       `);
     } else {
       logger.info('  ✓ dc_racks already has FK to dc_rooms');
