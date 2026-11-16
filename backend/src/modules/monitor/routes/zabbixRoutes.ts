@@ -15,6 +15,8 @@
 import type { Request, Response } from 'express';
 import { Router } from 'express';
 import { zabbixService } from '../services/zabbixService';
+import { zabbixImportService } from '../services/zabbixImportService';
+import { requireRole } from '../../../middleware/auth';
 import { validateBody } from '../../../middleware/validation';
 import { zabbixSchemas } from '../../../shared/schemas/apiValidation';
 
@@ -144,6 +146,28 @@ router.post('/problems', validateBody(zabbixSchemas.problems), async (req: Reque
     return res.status(502).json({ success: false, error: result.error });
   }
   res.json({ success: true, data: result.data });
+});
+
+/**
+ * POST /import — 从 Zabbix 拉取主机清单导入平台服务器管理。
+ * dryRun=true 时只返回映射预览，不写库；hostIds 可限定导入范围。
+ */
+router.post('/import', validateBody(zabbixSchemas.import), requireRole('admin', 'operator'), async (req: Request, res: Response) => {
+  try {
+    const result = await zabbixImportService.importHosts({
+      url: req.body.url,
+      apiToken: req.body.apiToken,
+      username: req.body.username,
+      password: req.body.password,
+      timeoutMs: req.body.timeoutMs,
+      hostIds: req.body.hostIds,
+      dryRun: req.body.dryRun,
+    });
+    res.json({ success: true, data: result });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : '导入失败';
+    res.status(502).json({ success: false, error: msg });
+  }
 });
 
 export default router;

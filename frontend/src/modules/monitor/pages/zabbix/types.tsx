@@ -6,7 +6,20 @@ import type { ReactNode } from 'react';
 
 export type AuthMode = 'password' | 'token';
 
-export type TabKey = 'hosts' | 'items' | 'triggers' | 'problems' | 'history' | 'test';
+export type TabKey = 'hosts' | 'items' | 'triggers' | 'problems' | 'history' | 'test' | 'import';
+
+/** Zabbix 主机导入预览/结果行（后端 /monitor/zabbix/import 返回） */
+export interface ZabbixImportRow {
+  hostid: string;
+  name: string;
+  hostname: string;
+  ip: string;
+  groups: string[];
+  os: string;
+  /** preview | duplicate | success | failed */
+  status: string;
+  error?: string;
+}
 
 export interface ConnectionConfig {
   url: string;

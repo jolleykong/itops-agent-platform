@@ -49,6 +49,22 @@ export interface ZabbixHost {
   [key: string]: unknown;
 }
 
+export interface ZabbixHostInterface {
+  ip?: string;
+  dns?: string;
+  port?: string;
+  /** 1=Agent 2=SNMP 3=IPMI 4=JMX */
+  type?: string;
+  /** '1' = 主接口 */
+  main?: string;
+}
+
+export interface ZabbixHostDetail extends ZabbixHost {
+  interfaces?: ZabbixHostInterface[];
+  groups?: Array<{ groupid: string; name: string }>;
+  inventory?: { os?: string; os_full?: string; location?: string };
+}
+
 export interface ZabbixItem {
   itemid: string;
   hostid: string;
@@ -153,6 +169,29 @@ class ZabbixService {
     }
 
     return this.rpcRequest<ZabbixHost[]>('host.get', params, {
+      url: opts?.url ?? '',
+      apiToken: auth,
+      timeoutMs: opts?.timeoutMs,
+    });
+  }
+
+  /**
+   * host.get（导入用）：主机 + 接口 + 主机组 + inventory 一次拉齐。
+   */
+  async getHostsDetail(
+    auth: string,
+    hostIds?: string[],
+    opts?: ZabbixClientOptions
+  ): Promise<ZabbixRpcResult<ZabbixHostDetail[]>> {
+    const params: Record<string, unknown> = {
+      output: ['hostid', 'host', 'name', 'status'],
+      selectInterfaces: ['ip', 'dns', 'port', 'type', 'main'],
+      selectGroups: ['groupid', 'name'],
+      selectInventory: ['os', 'os_full', 'location'],
+    };
+    if (hostIds && hostIds.length > 0) params.hostids = hostIds;
+
+    return this.rpcRequest<ZabbixHostDetail[]>('host.get', params, {
       url: opts?.url ?? '',
       apiToken: auth,
       timeoutMs: opts?.timeoutMs,

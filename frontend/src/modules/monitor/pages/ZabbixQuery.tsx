@@ -21,6 +21,7 @@ import {
   AlertCircle,
   Play,
   Plug,
+  Download,
   type LucideIcon,
 } from 'lucide-react';
 import { message } from 'antd';
@@ -43,6 +44,7 @@ import type {
   ZabbixTrigger,
   ZabbixProblem,
   ZabbixHistoryRow,
+  ZabbixImportRow,
 } from './zabbix/types';
 
 // ==================== 常量 ====================
@@ -53,6 +55,7 @@ const TABS: Array<{ key: TabKey; label: string; icon: LucideIcon }> = [
   { key: 'triggers', label: 'Triggers', icon: AlertCircle },
   { key: 'problems', label: 'Problems', icon: AlertTriangle },
   { key: 'history', label: 'History', icon: Database },
+  { key: 'import', label: '导入主机', icon: Download },
   { key: 'test', label: '测试', icon: Activity },
 ];
 
@@ -106,7 +109,70 @@ export default function ZabbixQuery() {
   const [timeTill, setTimeTill] = useState<string>('');
   const [historyLimit, setHistoryLimit] = useState<number>(100);
 
+  const [importRows, setImportRows] = useState<ZabbixImportRow[]>([]);
+  const [importSelected, setImportSelected] = useState<Set<string>>(new Set());
+  const [importBusy, setImportBusy] = useState(false);
+  const [importDone, setImportDone] = useState<string | null>(null);
+
   const canQuery = useMemo(() => cfg.url.trim().length > 0, [cfg.url]);
+
+  // ============ 导入主机 ============
+
+  const fetchImportPreview = async () => {
+    setImportBusy(true);
+    setError(null);
+    setImportDone(null);
+    try {
+      const { data } = await api.post('/monitor/zabbix/import', {
+        ...buildPayload(cfg),
+        dryRun: true,
+      });
+      const rows: ZabbixImportRow[] = data?.details ?? [];
+      setImportRows(rows);
+      // 默认全选可导入项（跳过已存在）
+      setImportSelected(
+        new Set(rows.filter((r) => r.status !== 'duplicate' && r.status !== 'failed').map((r) => r.hostid)),
+      );
+      if (rows.length === 0) {
+        message.info('Zabbix 未返回任何主机');
+      }
+    } catch (err) {
+      const msg = getAxiosErrorMessage(err, '获取导入预览失败');
+      setError(msg);
+      message.error(msg);
+    } finally {
+      setImportBusy(false);
+    }
+  };
+
+  const doImport = async () => {
+    if (importSelected.size === 0) {
+      message.warning('请至少勾选一台主机');
+      return;
+    }
+    setImportBusy(true);
+    setError(null);
+    try {
+      const { data } = await api.post('/monitor/zabbix/import', {
+        ...buildPayload(cfg),
+        dryRun: false,
+        hostIds: [...importSelected],
+      });
+      const summary = data
+        ? `导入成功 ${data.imported} 台，跳过 ${data.skipped} 台${data.failed ? `，失败 ${data.failed} 台` : ''}`
+        : '导入完成';
+      setImportDone(summary);
+      // 刷新预览，已导入的会显示为 duplicate
+      await fetchImportPreview();
+      message.success(summary);
+    } catch (err) {
+      const msg = getAxiosErrorMessage(err, '导入失败');
+      setError(msg);
+      message.error(msg);
+    } finally {
+      setImportBusy(false);
+    }
+  };
 
   const handleTest = async () => {
     if (!canQuery) {
@@ -390,15 +456,41 @@ export default function ZabbixQuery() {
           </div>
         )}
 
-        <button
-          type="button"
-          onClick={runQuery}
-          disabled={!canQuery || loading}
-          className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:opacity-90 disabled:opacity-50"
-        >
-          {loading ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />}
-          执行查询
-        </button>
+        {tab === 'import' ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={fetchImportPreview}
+              disabled={!canQuery || importBusy}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:opacity-90 disabled:opacity-50"
+            >
+              {importBusy ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
+              获取导入预览
+            </button>
+            <button
+              type="button"
+              onClick={doImport}
+              disabled={!canQuery || importBusy || importSelected.size === 0}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm font-medium hover:opacity-90 disabled:opacity-50"
+            >
+              {importBusy ? <Loader2 size={16} className="animate-spin" /> : <CheckCircle2 size={16} />}
+              导入选中（{importSelected.size}）
+            </button>
+            {importDone && (
+              <span className="text-xs text-text-secondary">{importDone}</span>
+            )}
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={runQuery}
+            disabled={!canQuery || loading}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:opacity-90 disabled:opacity-50"
+          >
+            {loading ? <Loader2 size={16} className="animate-spin" /> : <Play size={16} />}
+            执行查询
+          </button>
+        )}
       </section>
 
       <section className="bg-surface border border-border rounded-xl p-5">
@@ -433,6 +525,79 @@ export default function ZabbixQuery() {
             loading={loading}
             columns={HISTORY_COLUMNS}
           />
+        )}
+        {tab === 'import' && (
+          <div className="space-y-2">
+            {importRows.length === 0 && !importBusy && (
+              <div className="text-text-secondary text-sm py-4">
+                填好连接配置后，点击「获取导入预览」拉取 Zabbix 主机清单（不会写库）。确认后勾选并导入到平台服务器管理。
+              </div>
+            )}
+            {importRows.length > 0 && (
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left text-xs text-text-secondary border-b border-border">
+                    <th className="py-2 pr-2 w-8">
+                      <input
+                        type="checkbox"
+                        checked={importSelected.size === importRows.filter((r) => r.status !== 'duplicate').length && importSelected.size > 0}
+                        onChange={(e) =>
+                          setImportSelected(
+                            e.target.checked
+                              ? new Set(importRows.filter((r) => r.status !== 'duplicate').map((r) => r.hostid))
+                              : new Set(),
+                          )
+                        }
+                      />
+                    </th>
+                    <th className="py-2 pr-2">名称</th>
+                    <th className="py-2 pr-2">地址（IP/DNS）</th>
+                    <th className="py-2 pr-2">主机组</th>
+                    <th className="py-2 pr-2">OS</th>
+                    <th className="py-2 pr-2">状态</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {importRows.map((r) => (
+                    <tr key={r.hostid} className="border-b border-border/50">
+                      <td className="py-2 pr-2">
+                        {r.status === 'duplicate' ? (
+                          <span className="text-text-tertiary">—</span>
+                        ) : (
+                          <input
+                            type="checkbox"
+                            checked={importSelected.has(r.hostid)}
+                            onChange={(e) => {
+                              const next = new Set(importSelected);
+                              if (e.target.checked) next.add(r.hostid);
+                              else next.delete(r.hostid);
+                              setImportSelected(next);
+                            }}
+                          />
+                        )}
+                      </td>
+                      <td className="py-2 pr-2">{r.name}</td>
+                      <td className="py-2 pr-2 font-mono text-xs">{r.hostname}</td>
+                      <td className="py-2 pr-2 text-xs text-text-secondary">{r.groups.join(', ') || '—'}</td>
+                      <td className="py-2 pr-2 text-xs">{r.os || '—'}</td>
+                      <td className="py-2 pr-2 text-xs">
+                        {r.status === 'duplicate' ? (
+                          <span className="text-text-tertiary">已存在，跳过</span>
+                        ) : r.status === 'failed' ? (
+                          <span className="text-status-failed">{r.error ?? '失败'}</span>
+                        ) : (
+                          <span className="text-emerald-500">可导入</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            <p className="text-xs text-text-tertiary">
+              导入说明：主机以 IP/DNS 作为地址写入「服务器管理」，SSH 端口默认 22、用户名占位为 zabbix（无凭据，需后续补全），标签带 zabbix 与所属主机组。
+            </p>
+          </div>
         )}
         {tab === 'test' && !loading && (
           <div className="text-text-secondary text-sm py-4">

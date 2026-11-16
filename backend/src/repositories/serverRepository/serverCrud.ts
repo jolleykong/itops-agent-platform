@@ -370,14 +370,16 @@ export const serversRepo = {
     id: string; name: string; hostname: string; port: number; username: string;
     password: string | null; private_key: string | null; use_ssh_key: number;
     description: string | null; tags: string | null;
+    ip_address?: string | null; os?: string | null; os_type?: string | null;
   }): void {
     db.prepare(`
-      INSERT INTO servers (id, name, hostname, port, username, password, private_key, use_ssh_key, description, tags, enabled)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+      INSERT INTO servers (id, name, hostname, port, username, password, private_key, use_ssh_key, description, tags, enabled, ip_address, os, os_type)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
     `).run(
       input.id, input.name, input.hostname, input.port, input.username,
       input.password, input.private_key, input.use_ssh_key,
-      input.description, input.tags
+      input.description, input.tags,
+      input.ip_address ?? null, input.os ?? null, input.os_type ?? 'linux'
     );
   },
 

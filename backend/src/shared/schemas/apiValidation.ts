@@ -481,6 +481,10 @@ export const zabbixSchemas = {
   hosts: zabbixClientOptions.extend({
     filter: z.record(z.unknown()).optional(),
   }),
+  import: zabbixClientOptions.extend({
+    hostIds: z.array(z.string().min(1).max(100)).optional(),
+    dryRun: z.boolean().optional(),
+  }),
   items: zabbixClientOptions.extend({
     hostIds: z.array(z.string().min(1).max(100)).optional(),
     itemIds: z.array(z.string().min(1).max(100)).optional(),
