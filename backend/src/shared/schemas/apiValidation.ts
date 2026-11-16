@@ -469,6 +469,10 @@ export const prometheusSchemas = {
 const zabbixClientOptions = z.object({
   url: z.string().url('Zabbix API URL 必须为合法 URL'),
   apiToken: z.string().min(1).max(2000).optional(),
+  // 密码模式（/test 由 zabbixService.login 使用）；Zod 默认剥离未声明字段，
+  // 不声明会导致 validateBody 后 username/password 丢失，login 永远失败。
+  username: z.string().min(1).max(255).optional(),
+  password: z.string().min(1).max(255).optional(),
   timeoutMs: z.number().int().min(1000).max(60000).optional(),
 });
 

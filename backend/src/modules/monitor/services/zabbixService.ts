@@ -345,12 +345,16 @@ class ZabbixService {
       params,
       id: 1,
     };
-    if (opts.apiToken) body.auth = opts.apiToken;
+
+    // Zabbix 7.2（ZBXNEXT-9452）移除了 JSON-RPC body 中的 `auth` 属性，
+    // token 必须改走 HTTP 头 Authorization: Bearer（6.4+ 均支持）。
+    const headers: Record<string, string> = { 'Content-Type': 'application/json-rpc' };
+    if (opts.apiToken) headers['Authorization'] = `Bearer ${opts.apiToken}`;
 
     try {
       const response = await axios.post<ZabbixRpcEnvelope<T>>(opts.url, body, {
         timeout: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-        headers: { 'Content-Type': 'application/json-rpc' },
+        headers,
         // axios 默认会把非 2xx 视为异常，但 Zabbix 会把错误放在 200 body 里。
         validateStatus: () => true,
       });
@@ -386,9 +390,14 @@ class ZabbixService {
         return { success: false, error: `Zabbix 请求超时（${opts.timeoutMs ?? DEFAULT_TIMEOUT_MS}ms）` };
       }
       logger.error(`Zabbix RPC 调用失败 [${method}]`, axiosErr);
+      // 透出 axios 真实错误码/信息（ECONNREFUSED / ENOTFOUND / CERT 错误等），
+      // 便于区分网络层故障与协议层故障。
+      const detail = axiosErr.code
+        ? `[${axiosErr.code}] ${axiosErr.message}`
+        : axiosErr.message ?? `Zabbix 请求失败: ${method}`;
       return {
         success: false,
-        error: axiosErr.message ?? `Zabbix 请求失败: ${method}`,
+        error: `Zabbix 请求失败 [${method}]: ${detail}`,
       };
     }
   }

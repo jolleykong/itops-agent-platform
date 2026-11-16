@@ -38,7 +38,6 @@ import {
 import type {
   ConnectionConfig,
   TabKey,
-  ZabbixResponse,
   ZabbixHost,
   ZabbixItem,
   ZabbixTrigger,
@@ -58,16 +57,27 @@ const TABS: Array<{ key: TabKey; label: string; icon: LucideIcon }> = [
 ];
 
 async function callZabbix<T>(endpoint: string, payload: Record<string, unknown>): Promise<T[]> {
-  // axios 拦截器已解包 → data 本身就是后端 data 字段（ZabbixResponse）
+  // 后端 /monitor/zabbix/* 统一返回 { success, data } 信封：
+  //   - 查询类接口（hosts/items/triggers/problems/history）：data 为 T[]
+  //   - test：data 为 { reachable, authenticated }
+  // axios 拦截器已解包（response.data = 信封的 data 字段）。
   const { data } = await api.post(endpoint, payload);
-  const body = data as ZabbixResponse<T>;
-  if (!body) {
+  if (data == null) {
     throw new Error('Zabbix 请求失败：响应为空');
   }
-  if (body.error) {
-    throw new Error(body.error);
+  if (Array.isArray(data)) {
+    return data as T[];
   }
-  return body.result ?? [];
+  if (typeof data === 'object') {
+    const obj = data as Record<string, unknown>;
+    if (typeof obj.error === 'string' && obj.error) {
+      throw new Error(obj.error);
+    }
+    if (Array.isArray(obj.result)) {
+      return obj.result as T[];
+    }
+  }
+  return [];
 }
 
 // ==================== 主组件 ====================
