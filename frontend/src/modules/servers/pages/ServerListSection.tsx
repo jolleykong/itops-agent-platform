@@ -222,16 +222,32 @@ export function ServerListSection({
           <FolderPlus className="w-4 h-4" />
           新建分组
         </button>
-        {selectedIds.size > 0 && (
+        {visibleServers.length > 0 && (
           <button
-            onClick={handleBatchDelete}
-            disabled={isBatchDeleting}
-            className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm bg-red-500/10 border border-red-500/30 text-red-400 hover:bg-red-500/20 transition-colors disabled:opacity-50"
+            onClick={() => {
+              const allIds = visibleServers.map((s) => s.id);
+              const allSelected = allIds.every((id) => selectedIds.has(id));
+              setSelectedIds(allSelected ? new Set() : new Set(allIds));
+            }}
+            className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm bg-surface border border-border text-text-secondary hover:text-text-primary transition-colors"
           >
-            <Trash2 className="w-4 h-4" />
-            删除选中 ({selectedIds.size})
+            {visibleServers.length > 0 && visibleServers.every((s) => selectedIds.has(s.id)) ? '取消全选' : `全选本页 (${visibleServers.length})`}
           </button>
         )}
+        <button
+          onClick={handleBatchDelete}
+          disabled={selectedIds.size === 0 || isBatchDeleting}
+          title="先勾选服务器卡片左上角的复选框，再点此批量删除"
+          className={clsx(
+            'flex items-center gap-2 px-3 py-2 rounded-lg text-sm border transition-colors disabled:opacity-40',
+            selectedIds.size > 0
+              ? 'bg-red-500/10 border-red-500/30 text-red-400 hover:bg-red-500/20'
+              : 'bg-surface border-border text-text-secondary cursor-not-allowed',
+          )}
+        >
+          <Trash2 className="w-4 h-4" />
+          批量删除{selectedIds.size > 0 ? ` (${selectedIds.size})` : ''}
+        </button>
         {/* 搜索框 */}
         <div className="relative ml-auto w-64">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-text-tertiary" />
