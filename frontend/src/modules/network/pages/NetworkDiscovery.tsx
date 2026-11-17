@@ -386,11 +386,25 @@ export default function NetworkDiscovery() {
               )}
             </div>
             {selectedJob && (
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-3">
                 <span className="text-xs text-text-secondary">
                   在线: {results.filter((r) => r.status !== 'offline').length} / SNMP可达:{' '}
                   {results.filter((r) => r.status === 'snmp_ok').length}
                 </span>
+                {results.filter((r) => r.status === 'snmp_ok').length > 0 && (
+                  <button
+                    onClick={() => {
+                      setShowImportModal(true);
+                      setSelectedResults(
+                        new Set(results.filter((r) => r.status === 'snmp_ok').map((r) => r.id)),
+                      );
+                    }}
+                    className="px-3 py-1.5 bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 rounded-lg hover:bg-emerald-500/20 transition-all text-xs flex items-center gap-1.5"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    导入 SNMP 可达设备（{results.filter((r) => r.status === 'snmp_ok').length} 个）
+                  </button>
+                )}
               </div>
             )}
           </div>
@@ -511,23 +525,7 @@ export default function NetworkDiscovery() {
             </div>
           )}
 
-          {/* 批量导入 */}
-          {selectedJobId && results.filter((r) => r.status === 'snmp_ok').length > 0 && (
-            <div className="mt-4 pt-4 border-t border-border">
-              <button
-                onClick={() => {
-                  setShowImportModal(true);
-                  setSelectedResults(
-                    new Set(results.filter((r) => r.status === 'snmp_ok').map((r) => r.id)),
-                  );
-                }}
-                className="px-4 py-2 bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 rounded-lg hover:bg-emerald-500/20 transition-all text-sm flex items-center gap-2"
-              >
-                <Download className="w-4 h-4" />
-                导入 SNMP 可达设备（{results.filter((r) => r.status === 'snmp_ok').length} 个）
-              </button>
-            </div>
-          )}
+          {/* 批量导入按钮已移至「扫描结果」标题行右侧 */}
         </div>
       </div>
 
