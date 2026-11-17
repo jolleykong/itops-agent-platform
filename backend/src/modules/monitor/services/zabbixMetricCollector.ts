@@ -151,13 +151,13 @@ class ZabbixMetricCollector {
         prefer: (k) => /avg1/i.test(k) || /all/i.test(k),
         avoid: (k) => /avg5|avg15|guest/i.test(k),
       });
-      const cpu_usage = isFresh(cpuItem) ? Math.min(100, Math.max(0, toNum(cpuItem))) : 0;
+      let cpu_usage = isFresh(cpuItem) ? Math.min(100, Math.max(0, toNum(cpuItem))) : 0;
 
       // ── 内存 ──
       const memTotal = pick(items, /^vm\.memory\.size\[.*total/i);
       const memUsed = pick(items, /^vm\.memory\.size\[.*used/i);
       const memPavail = pick(items, /^vm\.memory\.size\[.*pavailable/i);
-      const memory_total_gb = bytesToGb(toNum(memTotal));
+      let memory_total_gb = bytesToGb(toNum(memTotal));
       let memory_used_gb = bytesToGb(toNum(memUsed));
       let memory_usage = memory_total_gb > 0 ? (memory_used_gb / memory_total_gb) * 100 : 0;
       if (memPavail && isFresh(memPavail)) {
@@ -183,8 +183,8 @@ class ZabbixMetricCollector {
         : diskTotalBytes > 0 ? (diskUsedBytes / diskTotalBytes) * 100 : 0;
 
       // ── 网络 ──
-      const netIn = pickNetInterface(items, 'in');
-      const netOut = pickNetInterface(items, 'out');
+      let netIn = pickNetInterface(items, 'in');
+      let netOut = pickNetInterface(items, 'out');
 
       // ── load：system.cpu.load 系 ──
       const loadItem = (mode: string) => pick(items, /^system\.cpu\.load/i, {
@@ -196,6 +196,28 @@ class ZabbixMetricCollector {
 
       // ── uptime ──
       const uptimeItem = pick(items, /^system\.uptime/i);
+      let uptime_seconds = toNum(uptimeItem);
+
+      // ── VMware vCenter 回退映射（vmware.vm.*：虚机经 vCenter 监控、无 Agent 接口时
+      //    没有任何经典 Agent key，必须从此类项取值，否则全部记 0）──
+      const vmCpuPerf = pick(items, /^vmware\.vm\.cpu\.usage\.perf\[/i);
+      if (cpu_usage === 0 && vmCpuPerf) cpu_usage = Math.min(100, Math.max(0, toNum(vmCpuPerf)));
+
+      const vmMemTotal = pick(items, /^vmware\.vm\.memory\.size\[/i);
+      const vmMemUsed = pick(items, /^vmware\.vm\.memory\.size\.usage\.guest\[/i);
+      if (memory_total_gb === 0 && vmMemTotal) {
+        memory_total_gb = bytesToGb(toNum(vmMemTotal));
+        memory_used_gb = bytesToGb(toNum(vmMemUsed));
+        if (memory_total_gb > 0 && memory_used_gb > 0) memory_usage = (memory_used_gb / memory_total_gb) * 100;
+      }
+
+      if (!netIn) netIn = pick(items, /^vmware\.vm\.net\.if\.in\[.*bps\]/i);
+      if (!netOut) netOut = pick(items, /^vmware\.vm\.net\.if\.out\[.*bps\]/i);
+
+      if (uptime_seconds === 0) {
+        const vmUptime = pick(items, /^vmware\.vm\.uptime\[/i);
+        if (vmUptime) uptime_seconds = toNum(vmUptime);
+      }
 
       const data = {
         cpu_usage,
@@ -210,11 +232,11 @@ class ZabbixMetricCollector {
         load_1min: toNum(load1),
         load_5min: toNum(load5),
         load_15min: toNum(load15),
-        uptime_seconds: toNum(uptimeItem),
+        uptime_seconds,
       };
 
       serversRepo.insertMetrics({ id: uuidv4(), server_id: serverId, ...data });
-      logger.info(`Zabbix metrics collected for ${server.name} (${serverId}): CPU=${data.cpu_usage?.toFixed(1)}%`);
+      logger.info(`Zabbix metrics collected for ${server.name} (${serverId}): CPU=${data.cpu_usage?.toFixed(1)}% MEM=${data.memory_usage?.toFixed(1)}%`);
       return { success: true };
     } catch (err) {
       if (err instanceof ZabbixChannelError) return { success: false, error: err.message };
@@ -243,14 +265,18 @@ class ZabbixMetricCollector {
         avoid: (k) => diskPathWeight(k) >= 100,
       });
 
+      // VMware 回退：虚机无 Agent 项时从 vmware.vm.* 取核数/内存
+      const vmCpuNum = pick(items, /^vmware\.vm\.cpu\.num\[/i);
+      const vmMemTotal = pick(items, /^vmware\.vm\.memory\.size\[/i);
+
       const existing = serversRepo.getById(serverId);
       const ipAddress = existing?.ip_address || existing?.hostname || '';
       const os = uname || existing?.os || 'Unknown';
 
       serversRepo.updateSystemInfo(serverId, {
         os,
-        cpu_cores: Math.round(toNum(cpuNumItem)) || existing?.cpu_cores || 0,
-        memory_gb: bytesToGb(toNum(memTotalItem)) || existing?.memory_gb || 0,
+        cpu_cores: Math.round(toNum(cpuNumItem)) || Math.round(toNum(vmCpuNum)) || existing?.cpu_cores || 0,
+        memory_gb: bytesToGb(toNum(memTotalItem)) || bytesToGb(toNum(vmMemTotal)) || existing?.memory_gb || 0,
         disk_gb: bytesToGb(toNum(diskTotalItem)) || existing?.disk_gb || 0,
         ip_address: ipAddress,
         private_ip: ipAddress,
@@ -286,7 +312,20 @@ class ZabbixMetricCollector {
       if (hasAvailable) {
         return { success: true, message: 'Zabbix Agent 可用（接口 available=1）' };
       }
-      return { success: false, message: 'Zabbix Agent 接口不可用（available≠1，Agent 未上线或 Zabbix Server 到 Agent 连接异常）' };
+      // VMware 虚机/应用级监控主机没有真正的 Agent 接口（available 恒 0），
+      // 改用监控项新鲜度判断采集链路是否正常
+      const itemsRes = await zabbixService.getItems(auth, [hostid], {
+        url: zabbixConnectionStore.get()?.url ?? '',
+        output: ['itemid', 'lastclock'],
+      });
+      const clocks = ((itemsRes.data ?? []) as Array<{ lastclock?: string }>)
+        .map((i) => parseInt(i.lastclock ?? '0', 10))
+        .filter((n) => n > 0);
+      const newest = clocks.length > 0 ? Math.max(...clocks) : 0;
+      if (newest > 0 && Date.now() / 1000 - newest <= 1800) {
+        return { success: true, message: 'Zabbix 数据采集中（VMware/应用级监控项，无 Agent 接口）' };
+      }
+      return { success: false, message: 'Zabbix Agent 接口不可用（available≠1）且监控项无新鲜数据，Agent 未上线或监控项全部异常' };
     } catch (err) {
       if (err instanceof ZabbixChannelError) return { success: false, message: err.message };
       return { success: false, message: err instanceof Error ? err.message : 'Zabbix 可用性检测失败' };

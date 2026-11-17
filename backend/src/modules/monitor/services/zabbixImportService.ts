@@ -121,8 +121,13 @@ class ZabbixImportService {
       const groupNameList = (host.hostgroups ?? host.groups ?? [])
         .map((g) => g.name)
         .filter(Boolean);
-      const { address } = pickPrimaryAddress(host);
       const displayName = host.name?.trim() || host.host;
+      const { address: rawAddress } = pickPrimaryAddress(host);
+      // 无接口 IP/DNS 的主机（VMware vCenter 虚机等）：地址回退为可见名，
+      // 不再拿 Zabbix 技术名（常为 UUID）当 hostname/ip_address
+      const hasRealAddress = rawAddress !== host.host;
+      const address = hasRealAddress ? rawAddress : displayName;
+      const ipAddress = hasRealAddress ? address : null;
       const os = host.inventory?.os?.trim() || host.inventory?.os_full?.trim() || '';
 
       const base: ZabbixImportDetail = {
@@ -140,6 +145,19 @@ class ZabbixImportService {
         const byHostid = serversRepo.getByZabbixHostid(host.hostid);
         if (byHostid) {
           if (byHostid.conn_type === 'zabbix') {
+            // 存量修复：旧版导入曾把无接口 IP 主机的 hostname/ip_address 写成
+            // Zabbix 技术名（UUID），重新预览时顺带修正为可见名
+            if (
+              !hasRealAddress &&
+              !opts.dryRun &&
+              /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(byHostid.hostname)
+            ) {
+              try {
+                serversRepo.repairZabbixNaming(byHostid.id, displayName);
+              } catch (e) {
+                logger.warn(`修复 Zabbix 主机命名失败 [${host.host}]:`, e);
+              }
+            }
             result.skipped++;
             result.details.push({ ...base, status: 'duplicate', error: '该 hostid 已导入且为 zabbix 通道' });
           } else {
@@ -203,7 +221,7 @@ class ZabbixImportService {
           description: `Zabbix 导入 | hostid=${host.hostid} | host=${host.host}`,
           // tags 列为 JSON 字符串；传数组会被 better-sqlite3 当作绑定列表展开，导致占位符数量不匹配
           tags: JSON.stringify(['zabbix', ...groupNameList]),
-          ip_address: address,
+          ip_address: ipAddress,
           os: os || null,
           conn_type: 'zabbix',
           zabbix_hostid: host.hostid,

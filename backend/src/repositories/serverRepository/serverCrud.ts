@@ -431,6 +431,21 @@ export const serversRepo = {
     `).run(hostid, id);
   },
 
+  /**
+   * 修复 Zabbix 主机命名（存量数据修复用）：
+   * 无接口 IP 的主机（VMware 虚机等）旧版导入曾把 Zabbix 技术名（UUID）
+   * 写进 hostname/ip_address，改为可见名并清空假 IP。
+   */
+  repairZabbixNaming(id: string, displayName: string): void {
+    db.prepare(`
+      UPDATE servers
+      SET hostname = ?,
+          ip_address = NULL,
+          updated_at = datetime('now','localtime')
+      WHERE id = ?
+    `).run(displayName, id);
+  },
+
   /** 添加服务器分组映射（幂等） */
   addGroupMapping(serverId: string, groupId: string): void {
     db.prepare('INSERT OR IGNORE INTO server_group_mapping (server_id, group_id) VALUES (?, ?)')
