@@ -122,6 +122,8 @@ import v061CmdbSyncTables from './v061_cmdb_sync_tables';
 import v062ServerConnType from './v062_server_conn_type';
 // === DC 外键死链修复 v063 ===
 import v063FixDcFkDangling from './v063_fix_dc_fk_dangling';
+// === alerts 恢复列 v064 ===
+import v064AlertsResolvedColumns from './v064_alerts_resolved_columns';
 
 // Helper: wrap sync up/down into async
 function wrapAsync(fn: (db: any) => void): (db: any) => Promise<void> {
@@ -382,6 +384,8 @@ export const ALL_MIGRATIONS: Migration[] = [
   v062ServerConnType,
   // v063: DC 外键死链修复（v058 表重建遗留）
   v063FixDcFkDangling,
+  // v064: alerts 表补齐恢复列（resolved_at/resolved_by/resolution_notes）
+  v064AlertsResolvedColumns,
 ];
 
 export function createMigrationManager(db: any): MigrationManager {

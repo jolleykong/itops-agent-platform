@@ -165,7 +165,7 @@ export function resolve(id: string): AlertRecord | undefined {
  */
 export function resolveAutoByExternalId(resolutionNotes: string, externalId: string): number {
   return db.prepare(
-    `UPDATE alerts SET status = 'resolved_auto', resolved_at = local_now(),
+    `UPDATE alerts SET status = 'resolved_auto', resolved_at = datetime('now','localtime'),
      resolved_by = 'auto', resolution_notes = ?
      WHERE metadata LIKE ? AND status IN ('new', 'confirmed', 'in_progress')`
   ).run(resolutionNotes, `%${externalId}%`).changes;
@@ -178,7 +178,7 @@ export function resolveAutoByExternalId(resolutionNotes: string, externalId: str
  */
 export function resolveAutoByHost(resolutionNotes: string, source: string, host: string): number {
   return db.prepare(
-    `UPDATE alerts SET status = 'resolved_auto', resolved_at = local_now(),
+    `UPDATE alerts SET status = 'resolved_auto', resolved_at = datetime('now','localtime'),
      resolved_by = 'auto', resolution_notes = ?
      WHERE source = ? AND title LIKE ? AND status IN ('new', 'confirmed', 'in_progress')
      AND created_at >= datetime('now', '-24 hours')`

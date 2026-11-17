@@ -33,12 +33,16 @@ export const PROVIDER_GUIDES: Record<string, ProviderGuide> = {
   zabbix: {
     title: 'Zabbix Webhook 接入指南',
     steps: [
-      '1. 在 Zabbix 管理后台 → 报警媒介类型 → 创建 Webhook 类型',
-      '2. 将下方 Webhook 地址填入 URL 字段',
-      '3. 参数中配置 {ALERT.SUBJECT}、{ALERT.MESSAGE} 等宏',
-      '4. 在动作(Actions)中关联此报警媒介',
+      '1. Zabbix 管理后台 → 报警 → 动作媒介类型 → 创建媒介类型，类型选 Webhook',
+      '2. URL 填写下方「Webhook 接收地址」（本平台是接收方，Zabbix 是推送方）',
+      '3. 参数(Name/Value)按大写键名添加，平台按以下键解析：',
+      '    TRIGGER.NAME={TRIGGER.NAME}  TRIGGER.SEVERITY={TRIGGER.SEVERITY}',
+      '    HOST.NAME={HOST.NAME}  HOST.IP={HOST.IP}  EVENT.ID={EVENT.ID}',
+      '    EVENT.VALUE={EVENT.VALUE}（1=故障 0=恢复，用于自动关闭告警）',
+      '    ITEM.NAME={ITEM.NAME}  ITEM.VALUE={ITEM.VALUE}',
+      '4. 消息模板选「问题」和「恢复」，动作(Actions)中关联此媒介',
     ],
-    note: '⚠️ Zabbix 告警推送使用 JSON 格式，系统会自动解析 subject 和 message 字段。',
+    note: '⚠️ 配置下方无必填项——接收告警不需要填 Endpoint；下方的 URL/Token 仅用于从 Zabbix API 主动拉取（可选）。',
   },
   grafana: {
     title: 'Grafana Alerting 接入指南',
@@ -58,7 +62,7 @@ export const PROVIDER_GUIDES: Record<string, ProviderGuide> = {
       '3. 支持字段：title(标题)、severity(严重度)、content(内容)、source(来源)',
     ],
     webhookFormat: 'generic',
-    note: '💡 通用格式，适用于自定义系统或第三方工具。最小 JSON 示例：{"title":"告警标题","severity":"warning","content":"告警详情"}',
+    note: '💡 通用格式，适用于自定义系统或第三方工具。最小 JSON 示例：{"title":"告警标题","severity":"warning","content":"告警详情"}。接收 Zabbix 告警请改用「Zabbix」告警源（有专用解析）。',
   },
 };
 

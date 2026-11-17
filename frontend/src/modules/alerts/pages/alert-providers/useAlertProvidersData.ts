@@ -132,7 +132,10 @@ export function useAlertProvidersData() {
   // ===== Helpers =====
   const getWebhookUrl = (providerId: string): string => {
     if (typeof window === 'undefined') return '';
-    return `${window.location.protocol}//${window.location.host}/api/webhooks/${providerId}`;
+    // 后端公开 webhook 路由挂在 /api/v1/webhooks/*（webhookRoutes.ts: /zabbix /prometheus /grafana /aliyun /tencent /auto /generic）
+    // provider 'webhook'（通用源）对应后端 /generic 端点
+    const path = providerId === 'webhook' ? 'generic' : providerId;
+    return `${window.location.protocol}//${window.location.host}/api/v1/webhooks/${path}`;
   };
 
   const handleCopy = async (text: string, id: string) => {
@@ -213,7 +216,7 @@ export function useAlertProvidersData() {
       ) {
         const webhookUrl = getWebhookUrl(selectedProvider.id);
         await api.post('/alerts/providers/fetch', {
-          provider: selectedProvider.id,
+          providerId: selectedProvider.id,
           config: configFormData,
         });
         setTestResult({
@@ -222,7 +225,7 @@ export function useAlertProvidersData() {
         });
       } else {
         await api.post('/alerts/providers/fetch', {
-          provider: selectedProvider.id,
+          providerId: selectedProvider.id,
           config: configFormData,
         });
         setTestResult({ ok: true, message: '连接测试成功，Provider 配置有效' });

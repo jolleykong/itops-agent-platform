@@ -52,9 +52,9 @@ export const alertProviderRegistry = new AlertProviderRegistry();
       configSchema: {
         type: 'object',
         properties: {
-          endpoint: { type: 'string', description: 'Webhook 端点' }
+          endpoint: { type: 'string', description: '（可选）仅用于平台向外部系统推送告警；接收告警无需填写' }
         },
-        required: ['endpoint']
+        required: []
       },
       fetchAlerts: async () => [],
       handleWebhook: (payload) => {
@@ -118,10 +118,10 @@ export const alertProviderRegistry = new AlertProviderRegistry();
       configSchema: {
         type: 'object',
         properties: {
-          url: { type: 'string', description: 'Zabbix URL' },
-          token: { type: 'string', description: '认证 Token' }
+          url: { type: 'string', description: '（可选）Zabbix API 地址，仅用于主动拉取；接收告警走 Webhook 无需填写' },
+          token: { type: 'string', description: '（可选）认证 Token，仅用于主动拉取' }
         },
-        required: ['url']
+        required: []
       },
       fetchAlerts: async (config) => {
         logger.info('🏠 查询 Zabbix 告警: ', config.url);
