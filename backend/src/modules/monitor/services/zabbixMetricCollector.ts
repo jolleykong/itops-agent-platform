@@ -271,8 +271,9 @@ class ZabbixMetricCollector {
       const vmMemTotal = findByKey(items, /^vmware\.vm\.memory\.size\[/i)[0];
 
       const existing = serversRepo.getById(serverId);
-      // 不用 hostname 兜底 IP 字段（VMware 虚机无接口 IP 时 hostname 是可见名）
-      const ipAddress = existing?.ip_address || null;
+      // IP 字段清洗：与 hostname 相同（历史污染）或缺失 → 置空，不用可见名冒充 IP
+      const existingIp = existing?.ip_address ?? '';
+      const ipAddress = existingIp && existingIp !== existing?.hostname ? existingIp : null;
       const os = uname || existing?.os || 'Unknown';
 
       serversRepo.updateSystemInfo(serverId, {
