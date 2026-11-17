@@ -6,7 +6,7 @@
 
 import { randomUUID } from 'crypto';
 import { promisify } from 'util';
-import { exec } from 'child_process';
+import { exec, execSync } from 'child_process';
 import { logger } from '../../../../utils/logger';
 import { decrypt } from '../../../auth/services/encryptionService';
 import { getErrorMessage } from '../../../../utils/errorHelpers';
@@ -22,8 +22,31 @@ export interface JobManagerDeps {
   activeJobs: Map<string, AbortController>;
 }
 
+// ping 二进制可用性（容器内可能未安装 iputils-ping，结果进程内缓存一次）
+let pingAvailable: boolean | null = null;
+function isPingAvailable(): boolean {
+  if (pingAvailable !== null) return pingAvailable;
+  if (process.platform === 'win32') {
+    pingAvailable = true; // Windows 自带 ping
+    return pingAvailable;
+  }
+  try {
+    execSync('command -v ping >/dev/null 2>&1', { stdio: 'ignore' });
+    pingAvailable = true;
+  } catch {
+    pingAvailable = false;
+    logger.warn('📡 ping binary not found in this environment — ICMP probe disabled, SNMP-only discovery');
+  }
+  return pingAvailable;
+}
+
 /**
  * Ping IP 并尝试 SNMP 发现
+ *
+ * 2026-11-17 修复：原实现「ping 通才尝试 SNMP」，容器内无 ping 命令时
+ * 所有 IP 均被误判 offline，SNMP 探测从未执行。现改为：
+ * - ping 仅作为辅助状态（不可用/ENOENT 时标记 unknown 并跳过）
+ * - SNMP 探测对每个 IP 无条件执行（这是 SNMP 设备发现的主通道）
  */
 async function pingAndDiscover(
   jobId: string, ip: string, credentials: SnmpCredentialRecord[], signal: AbortSignal
@@ -31,31 +54,31 @@ async function pingAndDiscover(
   if (signal.aborted) return false;
 
   const startTime = Date.now();
-  let isOnline = false;
+  // 'online' = ping 通；'offline' = ping 失败；'unknown' = 无 ping 二进制，跳过 ICMP
+  let pingStatus: 'online' | 'offline' | 'unknown' = 'unknown';
 
-  try {
-    // 跨平台 Ping 检测
-    const { stdout } = await execAsync(buildPingCommand(ip), { timeout: 3000 });
-    isOnline = isPingSuccess(stdout);
-  } catch {
-    isOnline = false;
+  if (isPingAvailable()) {
+    try {
+      // 跨平台 Ping 检测
+      const { stdout } = await execAsync(buildPingCommand(ip), { timeout: 3000 });
+      pingStatus = isPingSuccess(stdout) ? 'online' : 'offline';
+    } catch (err: unknown) {
+      // ENOENT（ping 消失）按 unknown 处理，超时按 offline
+      const code = (err as { code?: string })?.code;
+      pingStatus = code === 'ENOENT' ? 'unknown' : 'offline';
+      if (code === 'ENOENT') pingAvailable = false;
+    }
   }
 
   const responseTimeMs = Date.now() - startTime;
 
-  if (!isOnline) {
-    networkDeviceRepository.insertDiscoveryResultOffline(randomUUID(), jobId, ip, responseTimeMs);
-    return false;
-  }
-
-  // 在线 → 尝试 SNMP 连接
+  // 无论 ping 结果如何，都尝试 SNMP（发现的主通道）
   let snmpResult: any = null;
   let usedCredential: any = null;
 
   for (const cred of credentials) {
     if (signal.aborted) return false;
     try {
-      // Try direct SNMP connection (using snmpService's testing mechanism)
       const snmpInfo = await trySnmpConnect(ip, cred);
       if (snmpInfo) {
         snmpResult = snmpInfo;
@@ -67,13 +90,13 @@ async function pingAndDiscover(
     }
   }
 
-  // 保存结果
+  // 保存结果（SNMP 不通且 ping 不通/不可用 → offline）
   const resultId = randomUUID();
   networkDeviceRepository.insertDiscoveryResultOnline({
     id: resultId,
     job_id: jobId,
     ip_address: ip,
-    status: snmpResult ? 'snmp_ok' : 'online',
+    status: snmpResult ? 'snmp_ok' : pingStatus === 'online' ? 'online' : 'offline',
     sys_name: snmpResult?.sysName || null,
     sys_descr: snmpResult?.sysDescr || null,
     sys_location: snmpResult?.sysLocation || null,

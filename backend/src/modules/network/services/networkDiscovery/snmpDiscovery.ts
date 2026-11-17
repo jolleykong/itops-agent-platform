@@ -18,6 +18,8 @@ export async function trySnmpConnect(ip: string, cred: SnmpCredentialRecord): Pr
     port: cred.snmp_port || 161,
     timeout: 3000,
     retries: 1,
+    // 显式按凭证版本探测（net-snmp 默认 Version1，v2c 设备可能拒绝 v1 GET）
+    version: cred.snmp_version === 'v1' ? snmp.Version1 : cred.snmp_version === 'v3' ? snmp.Version3 : snmp.Version2c,
   };
 
   let session: any;

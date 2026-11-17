@@ -104,11 +104,13 @@ ENV http_proxy= \
     no_proxy=
 
 # Install runtime dependencies (SQLite library, Python for dbskiter, gosu for privilege dropping)
+# iputils-ping: 网络设备发现需要 ICMP 探测（需容器具备 NET_RAW 能力，Docker 默认授予）
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libsqlite3-0 \
     python3 \
     python3-pip \
     gosu \
+    iputils-ping \
     && rm -rf /var/lib/apt/lists/*
 
 # 安装 dbskiter（数据库运维 Agent 依赖），构建时失败不阻塞镜像构建
