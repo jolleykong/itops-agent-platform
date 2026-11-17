@@ -12,7 +12,8 @@ import api from '../../../lib/api';
 interface SshKeyItem {
   id: string;
   name: string;
-  auth_type: 'key' | 'password';
+  /** listKeys 不返回 auth_type，用 fingerprint 是否存在区分（密码凭据无指纹） */
+  fingerprint?: string | null;
   username?: string | null;
 }
 
@@ -35,8 +36,9 @@ export function SshKeyPicker({ value, onChange, persist, onPersistChange, persis
     let cancelled = false;
     api
       .get('/ssh-keys')
-      .then((res: { data: { data: SshKeyItem[] } }) => {
-        if (!cancelled) setKeys(res.data?.data || []);
+      .then((res: { data: SshKeyItem[] }) => {
+        // 注意：api.ts 响应拦截器已解包 { success, data } → res.data 即数组本身
+        if (!cancelled) setKeys(Array.isArray(res.data) ? res.data : []);
       })
       .catch(() => {
         if (!cancelled) setLoadError('凭据列表加载失败');
@@ -60,7 +62,7 @@ export function SshKeyPicker({ value, onChange, persist, onPersistChange, persis
           {keys.map((k) => (
             <option key={k.id} value={k.id}>
               {k.name}
-              {k.auth_type === 'password' ? '（密码）' : '（密钥）'}
+              {k.fingerprint ? '（密钥）' : '（密码）'}
               {k.username ? ` · ${k.username}` : ''}
             </option>
           ))}
