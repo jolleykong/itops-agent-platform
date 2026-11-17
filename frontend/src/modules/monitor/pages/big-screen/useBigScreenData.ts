@@ -34,7 +34,8 @@ export function useBigScreenData() {
   const [titleInputValue, setTitleInputValue] = useState(dashboardTitle);
   // big-screen 系统资源监控：用户选定的服务器
   // 'auto' = 跟随本机/聚合（默认），'__all__' = 所有服务器聚合，具体 serverId = 单服务器
-  const [selectedServerId, setSelectedServerId] = useState<string>('auto');
+  // 默认展示所有服务器聚合视图（几百台规模下单机数据意义有限）
+  const [selectedServerId, setSelectedServerId] = useState<string>('__all__');
 
   const prevCriticalCountRef = useRef(0);
   const containerRef = useRef<HTMLDivElement>(null);

@@ -176,8 +176,8 @@ export default function BigScreenLeftColumn({
 
   return (
     <div className="col-span-3 flex flex-col gap-4">
-      {/* 系统资源监控 */}
-      <div className="bg-slate-800/40 backdrop-blur-md rounded-2xl p-5 border border-border">
+      {/* 系统资源监控（relative z-20：本面板含下拉弹出列表，须压过后续 backdrop-blur 面板的堆叠上下文） */}
+      <div className="bg-slate-800/40 backdrop-blur-md rounded-2xl p-5 border border-border relative z-20">
         <h2 className="text-lg font-semibold text-text-primary mb-4 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
@@ -198,7 +198,7 @@ export default function BigScreenLeftColumn({
                 />
               </button>
               {ddOpen && (
-                <div className="absolute right-0 top-full mt-1 w-72 bg-slate-900 border border-border rounded-lg shadow-xl z-30 overflow-hidden">
+                <div className="absolute right-0 top-full mt-1 w-72 bg-slate-900 border border-border rounded-lg shadow-xl z-50 overflow-hidden">
                   <div className="relative p-2 border-b border-border">
                     <Search className="w-3.5 h-3.5 text-text-tertiary absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
                     <input
