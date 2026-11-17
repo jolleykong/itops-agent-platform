@@ -174,7 +174,8 @@ class ZabbixImportService {
           private_key: null,
           use_ssh_key: 0,
           description: `Zabbix 导入 | hostid=${host.hostid} | host=${host.host}`,
-          tags: ['zabbix', ...groupNameList],
+          // tags 列为 JSON 字符串；传数组会被 better-sqlite3 当作绑定列表展开，导致占位符数量不匹配
+          tags: JSON.stringify(['zabbix', ...groupNameList]),
           ip_address: address,
           os: os || null,
           conn_type: 'zabbix',
