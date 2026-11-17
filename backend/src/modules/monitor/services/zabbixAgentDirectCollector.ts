@@ -75,7 +75,13 @@ function agentQuery(host: string, port: number, key: string, timeoutMs = QUERY_T
       finish(new ZabbixAgentDirectError(`目标 ${host}:${port} 连接/响应超时（${timeoutMs}ms，检查防火墙是否放行 10050）`));
     });
     socket.connect(port, host, () => {
-      socket.write(key + '\n');
+      // 请求同样用 ZBXD 帧：新版 Agent（如 7.4）被动检查对明文请求静默丢弃，
+      // ZBXD 帧 2.2+ 全版本支持，统一走帧协议最稳
+      const keyBuf = Buffer.from(key, 'utf-8');
+      const frame = Buffer.concat([Buffer.from('ZBXD\x01', 'latin1'), Buffer.alloc(8), keyBuf]);
+      frame.writeUInt32LE(keyBuf.length, 5);
+      frame.writeUInt32LE(0, 9);
+      socket.write(frame);
     });
     socket.on('data', (d: Buffer) => {
       buf = Buffer.concat([buf, d]);
