@@ -119,6 +119,10 @@ export class SSHConnectionPool {
       if (cred.username) {
         serverOverride.username = cred.username;
       }
+      // Zabbix 通道服务器记录的端口是 agent 端口（10050），SSH 必须走 22
+      if (server.conn_type === 'zabbix' || server.conn_type === 'zabbix_agent') {
+        serverOverride.port = 22;
+      }
       logger.info(
         `🔑 Transient SSH (manual credential) for server ${serverId} (${server.hostname}:${server.port || 22}) via credential ${options.sshKeyId}`,
       );
