@@ -133,6 +133,12 @@ export default function Servers() {
               onSelectForCommand={(server) => {
                 setSelectedServer(server);
                 setCommandResult(null);
+                // 命令区渲染在服务器列表底部，几百台规模下不在视口内 → 自动滚动定位
+                setTimeout(() => {
+                  document
+                    .getElementById('command-section')
+                    ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }, 80);
               }}
               onRunCompliance={handleRunCompliance}
               onViewCommandHistory={(server) => {

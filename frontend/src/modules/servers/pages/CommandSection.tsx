@@ -23,8 +23,25 @@ export function CommandSection({
 }: CommandSectionProps) {
   if (!selectedServer) return null;
 
+  const isSshChannel = !selectedServer.conn_type || selectedServer.conn_type === 'ssh';
+
   return (
     <>
+      {/* Zabbix 通道不支持 SSH 命令执行的提前提示（后端连接池守卫会拒绝，避免用户执行后才报错） */}
+      {!isSshChannel && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-4 flex items-start gap-3">
+          <span className="text-amber-400 text-lg leading-none mt-0.5">⚠️</span>
+          <div className="text-sm">
+            <p className="text-amber-300 font-medium">
+              该服务器为 {selectedServer.conn_type === 'zabbix' ? 'Zabbix API' : 'Zabbix Agent 直连'}监控通道，不支持 SSH 命令执行
+            </p>
+            <p className="text-text-secondary mt-1 text-xs">
+              Zabbix 通道为只读监控（指标采集/合规检查均走监控项），命令执行需要为该设备配置 SSH 通道（连接类型选"SSH"并填写凭据）后使用。
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* 命令执行结果 */}
       {commandResult !== null && (
         <div className="bg-surface border border-border rounded-lg p-6">
@@ -75,8 +92,8 @@ export function CommandSection({
         </div>
       )}
 
-      {/* 快速命令执行区域 */}
-      <div className="bg-surface border border-border rounded-lg p-6">
+      {/* 快速命令执行区域（id 供"执行命令"按钮点击后 scrollIntoView 定位） */}
+      <div id="command-section" className="bg-surface border border-border rounded-lg p-6">
         <h3 className="text-lg font-semibold text-text-primary mb-4">
           在 {selectedServer.name} 上执行命令
         </h3>
