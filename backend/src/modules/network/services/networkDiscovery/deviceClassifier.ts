@@ -43,9 +43,11 @@ const NETWORK_OID_PREFIXES = [
 /** BMC（带外管理控制器）OID 前缀 */
 const BMC_OID_PREFIXES = [
   '.1.3.6.1.4.1.674.10890.', // Dell BMC
-  '.1.3.6.1.4.1.674.10893.', // Dell iDRAC / Remote Access
-  '.1.3.6.1.4.1.232.',       // HP iLO
-  '.1.3.6.1.4.1.343.',       // IBM / Lenovo IMM
+  '.1.3.6.1.4.1.674.10892.', // Dell iDRAC/DRAC（实测 674.10892.5）
+  '.1.3.6.1.4.1.674.10893.', // Dell Remote Access
+  '.1.3.6.1.4.1.2.3.51.',    // IBM IMM / Lenovo（实测 IMM2 = 2.3.51.3）
+  '.1.3.6.1.4.1.232.',       // HP iLO（实测 232.9.4.11）
+  '.1.3.6.1.4.1.343.',       // IBM
   '.1.3.6.1.4.1.13318.',     // AMI MegaRAC
 ];
 
