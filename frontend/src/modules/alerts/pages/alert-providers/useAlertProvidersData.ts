@@ -16,11 +16,13 @@ import { useMemo, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '../../../../lib/api';
 import { getAxiosErrorMessage } from '@/lib/errorHandler';
+import { useToast } from '../../../../contexts/ToastContext';
 import type { AlertProvider, AlertProviderConfig, TestResult } from './types';
 import { getFormFields } from './providerGuides';
 
 export function useAlertProvidersData() {
   const queryClient = useQueryClient();
+  const { toast } = useToast();
 
   // ===== State =====
   const [selectedType, setSelectedType] = useState<string | null>(null);
@@ -62,8 +64,12 @@ export function useAlertProvidersData() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['alert-provider-configs'] });
+      toast('配置保存成功', 'success');
       setShowConfigModal(false);
       resetForm();
+    },
+    onError: (err: unknown) => {
+      toast(`保存失败：${getAxiosErrorMessage(err, '未知错误')}`, 'error');
     },
   });
 
@@ -74,8 +80,12 @@ export function useAlertProvidersData() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['alert-provider-configs'] });
+      toast('配置更新成功', 'success');
       setShowConfigModal(false);
       resetForm();
+    },
+    onError: (err: unknown) => {
+      toast(`更新失败：${getAxiosErrorMessage(err, '未知错误')}`, 'error');
     },
   });
 
@@ -85,6 +95,10 @@ export function useAlertProvidersData() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['alert-provider-configs'] });
+      toast('配置已删除', 'success');
+    },
+    onError: (err: unknown) => {
+      toast(`删除失败：${getAxiosErrorMessage(err, '未知错误')}`, 'error');
     },
   });
 

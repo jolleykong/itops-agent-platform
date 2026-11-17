@@ -156,7 +156,7 @@ export function EditConfigModal({
                       />
                     ) : field.key.includes('url') || field.key.includes('endpoint') ? (
                       <input
-                        type="url"
+                        type="text"
                         value={(configFormData[field.key] as string) || ''}
                         onChange={(e) =>
                           setConfigFormData({
