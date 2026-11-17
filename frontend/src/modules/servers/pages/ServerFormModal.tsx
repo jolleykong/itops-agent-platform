@@ -193,7 +193,6 @@ export function ServerFormModal({
                 />
               </div>
             )}
-            {formData.conn_type === 'ssh' && (
           </div>
 
           {formData.conn_type === 'ssh' && (
