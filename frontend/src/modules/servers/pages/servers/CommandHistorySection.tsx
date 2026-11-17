@@ -72,7 +72,7 @@ export function CommandHistorySection({
                 <summary className="text-xs text-text-secondary cursor-pointer hover:text-text-primary">
                   输出 ({item.stdout.length} 字符)
                 </summary>
-                <pre className="mt-2 bg-surface p-3 rounded text-xs overflow-x-auto text-text-primary font-mono max-h-40 overflow-y-auto">
+                <pre className="mt-2 bg-surface p-3 rounded text-xs overflow-x-auto text-text-primary font-mono max-h-96 overflow-y-auto">
                   {item.stdout}
                 </pre>
               </details>
@@ -82,7 +82,7 @@ export function CommandHistorySection({
                 <summary className="text-xs text-status-warning cursor-pointer hover:text-text-primary">
                   错误 ({item.stderr.length} 字符)
                 </summary>
-                <pre className="mt-2 bg-status-failed/5 p-3 rounded text-xs overflow-x-auto text-status-failed font-mono max-h-40 overflow-y-auto">
+                <pre className="mt-2 bg-status-failed/5 p-3 rounded text-xs overflow-x-auto text-status-failed font-mono max-h-96 overflow-y-auto">
                   {item.stderr}
                 </pre>
               </details>

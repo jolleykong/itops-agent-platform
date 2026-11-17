@@ -64,7 +64,7 @@ export function CommandSection({
       )}
 
       {/* 命令执行结果 */}
-      {commandResult !== null && (
+      {commandResult && (
         <div className="bg-surface border border-border rounded-lg p-6">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-lg font-semibold text-text-primary">命令执行结果</h3>
@@ -96,7 +96,7 @@ export function CommandSection({
             {commandResult.stdout && (
               <div>
                 <p className="text-xs text-text-secondary mb-1">输出:</p>
-                <pre className="bg-background p-3 rounded text-xs overflow-x-auto text-text-primary font-mono max-h-60 overflow-y-auto">
+                <pre className="bg-background p-3 rounded text-xs overflow-x-auto text-text-primary font-mono max-h-96 overflow-y-auto">
                   {commandResult.stdout}
                 </pre>
               </div>
@@ -104,7 +104,7 @@ export function CommandSection({
             {commandResult.stderr && (
               <div>
                 <p className="text-xs text-status-warning mb-1">错误:</p>
-                <pre className="bg-status-failed/5 p-3 rounded text-xs overflow-x-auto text-status-failed font-mono max-h-60 overflow-y-auto">
+                <pre className="bg-status-failed/5 p-3 rounded text-xs overflow-x-auto text-status-failed font-mono max-h-96 overflow-y-auto">
                   {commandResult.stderr}
                 </pre>
               </div>

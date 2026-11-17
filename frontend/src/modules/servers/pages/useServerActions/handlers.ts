@@ -202,7 +202,9 @@ export function useServerActionsHandlers(
       { id: selectedServer.id, command, ...payload },
       {
         onSuccess: (data: any) => {
-          setCommandResult(data.data);
+          // api 响应拦截器已把 {success,data} 解包一层；这里兼容两种形态取结果体
+          const result = data && typeof data.data === 'object' ? data.data : data;
+          setCommandResult(result ?? null);
         },
         onSettled: () => {
           setIsExecuting(false);
@@ -331,7 +333,9 @@ ${serverInfo.disk_gb ? `磁盘大小：${serverInfo.disk_gb}GB` : ''}
       { id: aiCommandServer!.id, command: aiGeneratedCommand, ...payload },
       {
         onSuccess: (data: any) => {
-          setCommandResult(data.data);
+          // 同上：兼容拦截器解包后的结果体形态
+          const result = data && typeof data.data === 'object' ? data.data : data;
+          setCommandResult(result ?? null);
         },
         onSettled: () => {
           setIsExecuting(false);
