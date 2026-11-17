@@ -155,30 +155,47 @@ export function adaptZabbix(payload: unknown): AlertAdapterResult {
 
   const body = payload as WebhookBody;
 
+  // 兼容两种 Zabbix webhook 载荷：
+  // ① 官方嵌套格式 body.TRIGGER.NAME / body.HOST.NAME / body.EVENT.VALUE
+  // ② 自定义媒介类型常见的"平铺宏键"格式：{"TRIGGER.NAME": "{TRIGGER.NAME}", ...}
+  const flat = (key: string): string | undefined => {
+    const v = (body as Record<string, unknown>)[key];
+    return typeof v === 'string' || typeof v === 'number' ? String(v) : undefined;
+  };
+
   try {
     const triggerObj = body.TRIGGER;
     const hostObj = body.HOST;
     const eventObj = body.event;
     const itemObj = body.ITEM;
 
-    const trigger = (triggerObj?.NAME as string) || (body.trigger as string) || (eventObj?.name as string);
+    const trigger =
+      (triggerObj?.NAME as string) || (body.trigger as string) || (eventObj?.name as string) || flat('TRIGGER.NAME');
     if (!trigger) {
       errors.push('Missing trigger name');
       return { alerts, errors };
     }
 
-    const host = (hostObj?.NAME as string) || (body.host as string) || ((eventObj?.host as unknown as WebhookBody)?.name as string) || 'Unknown';
-    const hostIp = (hostObj?.IP as string) || (body.host_ip as string) || '';
-    const rawSeverity = (triggerObj?.SEVERITY as string) || (triggerObj?.PRIORITY as string | number) || (body.severity as string | number) || ((eventObj?.severity as string));
+    const host =
+      (hostObj?.NAME as string) || (body.host as string) || ((eventObj?.host as unknown as WebhookBody)?.name as string) || flat('HOST.NAME') || 'Unknown';
+    const hostIp = (hostObj?.IP as string) || (body.host_ip as string) || flat('HOST.IP') || '';
+    const rawSeverity =
+      (triggerObj?.SEVERITY as string) ||
+      (triggerObj?.PRIORITY as string | number) ||
+      (body.severity as string | number) ||
+      ((eventObj?.severity as string)) ||
+      flat('TRIGGER.SEVERITY') ||
+      flat('TRIGGER.PRIORITY');
     const severity = normalizeSeverityLabel(rawSeverity);
-    const eventId = body.EVENT?.ID || (eventObj?.id as string) || (body.eventid as string);
-    const triggerId = (triggerObj?.ID as string) || (body.triggerid as string);
-    const item = (itemObj?.NAME as string) || (body.item as string) || '';
-    const itemValue = (itemObj?.VALUE as string) || ((body.item as WebhookBody)?.value as string) || (body.value as string) || '';
-    const eventTime = (body.EVENT?.TIME as string) || (eventObj?.clock as string) || (body.clock as string);
-    const eventDate = (body.EVENT?.DATE as string) || (eventObj?.date as string);
+    const eventId = body.EVENT?.ID || (eventObj?.id as string) || (body.eventid as string) || flat('EVENT.ID');
+    const triggerId = (triggerObj?.ID as string) || (body.triggerid as string) || flat('TRIGGER.ID');
+    const item = (itemObj?.NAME as string) || (body.item as string) || flat('ITEM.NAME') || '';
+    const itemValue =
+      (itemObj?.VALUE as string) || ((body.item as WebhookBody)?.value as string) || (body.value as string) || flat('ITEM.VALUE') || '';
+    const eventTime = (body.EVENT?.TIME as string) || (eventObj?.clock as string) || (body.clock as string) || flat('EVENT.TIME');
+    const eventDate = (body.EVENT?.DATE as string) || (eventObj?.date as string) || flat('EVENT.DATE');
 
-    const eventValue = body.EVENT?.VALUE || (eventObj?.value as string) || (body.value as string);
+    const eventValue = body.EVENT?.VALUE || (eventObj?.value as string) || (body.value as string) || flat('EVENT.VALUE');
     const isResolved = eventValue === '0';
     const content = [
       `Host: ${host}`,
