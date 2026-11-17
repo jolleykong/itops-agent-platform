@@ -7,7 +7,7 @@ import {
   MonitorPlay, Sparkles, FolderPlus, Search, X,
 } from 'lucide-react';
 import clsx from 'clsx';
-import api from '../../../../lib/api';
+import api from '../../../lib/api';
 import type { Server as ServerType, ServerGroup } from './types';
 import { GroupTree } from './ServerGroupSection';
 
