@@ -216,6 +216,8 @@ export function adaptZabbix(payload: unknown): AlertAdapterResult {
       content,
       metadata: {
         raw_severity: (rawSeverity === null || rawSeverity === undefined) ? null : String(rawSeverity),
+        // external_id 落入 metadata，供恢复事件 resolveAutoByExternalId 的 LIKE 匹配命中
+        zabbix_external_id: eventId ? `zabbix-${eventId}` : undefined,
         zabbix_host: host,
         zabbix_host_ip: hostIp,
         zabbix_trigger_id: triggerId,
