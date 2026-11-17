@@ -78,15 +78,11 @@ export default function SSHKeys() {
               <SSHKeyCard
                 key={keyData.id}
                 keyData={keyData}
-                expandedKey={data.expandedKey}
-                setExpandedKey={data.setExpandedKey}
-                fullKeyData={data.fullKeyData}
                 usageServers={data.usageServers}
                 usageLoading={data.usageLoading}
                 setUsageServers={() => data.setUsageServers(null)}
                 handleViewUsage={data.handleViewUsage}
                 handleCopyFingerprint={data.handleCopyFingerprint}
-                handleCopyKey={data.handleCopyKey}
                 handleEdit={data.handleEdit}
                 setDeleteConfirmKey={data.setDeleteConfirmKey}
               />

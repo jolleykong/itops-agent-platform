@@ -48,12 +48,15 @@ export const serverCrudService = {
 
   /**
    * 列出所有服务器（含分组信息 + 解析 tags）
+   * 安全：列表批量返回，password/private_key/vnc_password（密文）一律不下发
    */
   listServers() {
     const servers = serverRepository.servers.list();
     return servers.map((server) => {
+      const { password: _password, private_key: _privateKey, vnc_password: _vncPassword, ...safe } =
+        server as unknown as Record<string, unknown>;
       const groups = serverRepository.groups.listByServer(server.id).map((g) => ({ id: g.id, name: g.name }));
-      return { ...parseJsonFields(server as unknown as Record<string, unknown>), groups };
+      return { ...parseJsonFields(safe), groups };
     });
   },
 

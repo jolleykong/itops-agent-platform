@@ -6,7 +6,7 @@
  * - 7 useState（isModalOpen / selectedKey / formData / expandedKey / deleteConfirmKey / usageServers / usageLoading / searchQuery）
  * - 2 useQuery（ssh-keys list / single key full private）
  * - 3 useMutation（create / update / delete）
- * - 6 handlers（resetForm / handleSubmit / handleEdit / handleCopyFingerprint / handleCopyKey / handleViewUsage）
+ * - 5 handlers（resetForm / handleSubmit / handleEdit / handleCopyFingerprint / handleViewUsage）
  * - 1 derived（filteredKeys）
  *
  * 拆分原则遵循 ADR-031 §二.3 模式 4 + lessons-learned §3.5
@@ -42,7 +42,6 @@ export interface UseSSHKeysDataResult {
   // queries
   sshKeys: SshKey[] | null;
   isLoading: boolean;
-  fullKeyData: (SshKey & { private_key: string }) | null | undefined;
 
   // mutations
   createPending: boolean;
@@ -58,7 +57,6 @@ export interface UseSSHKeysDataResult {
   handleSubmit: (e: React.FormEvent) => void;
   handleEdit: (key: SshKey) => void;
   handleCopyFingerprint: (fingerprint: string) => void;
-  handleCopyKey: () => void;
   handleDeleteConfirmed: () => void;
   handleViewUsage: (key: SshKey) => Promise<void>;
 }
@@ -98,15 +96,8 @@ export function useSSHKeysData(): UseSSHKeysDataResult {
     },
   });
 
-  const { data: fullKeyData } = useQuery({
-    queryKey: ['ssh-key', expandedKey],
-    queryFn: async () => {
-      if (!expandedKey) return null;
-      const { data } = await api.get(`/ssh-keys/${expandedKey}`);
-      return data as SshKey & { private_key: string };
-    },
-    enabled: !!expandedKey,
-  });
+  // 安全加固：移除 fullKeyData 查询与"复制私钥"功能——私钥（密文）不应下发到浏览器，
+  // 详情接口 /ssh-keys/:id 现已 admin-only 且默认脱敏。
 
   // ── Mutations ──
   const createMutation = useMutation({
@@ -215,13 +206,6 @@ export function useSSHKeysData(): UseSSHKeysDataResult {
     [toast],
   );
 
-  const handleCopyKey = useCallback(() => {
-    if (fullKeyData?.private_key) {
-      navigator.clipboard.writeText(fullKeyData.private_key);
-      toast.success('私钥已复制到剪贴板');
-    }
-  }, [fullKeyData, toast]);
-
   const handleDeleteConfirmed = useCallback(() => {
     if (!deleteConfirmKey) return;
     deleteMutation.mutate(deleteConfirmKey.id);
@@ -276,8 +260,7 @@ export function useSSHKeysData(): UseSSHKeysDataResult {
     // queries
     sshKeys: sshKeys ?? null,
     isLoading,
-    fullKeyData,
-    // mutations
+      // mutations
     createPending: createMutation.isPending,
     updatePending: updateMutation.isPending,
     deletePending: deleteMutation.isPending,
@@ -289,8 +272,7 @@ export function useSSHKeysData(): UseSSHKeysDataResult {
     handleSubmit,
     handleEdit,
     handleCopyFingerprint,
-    handleCopyKey,
-    handleDeleteConfirmed,
+      handleDeleteConfirmed,
     handleViewUsage,
   };
 }

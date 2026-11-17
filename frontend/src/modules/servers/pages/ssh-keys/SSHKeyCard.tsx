@@ -7,37 +7,29 @@
  * 拆分原则遵循 ADR-031 §二.3 模式 3 + lessons-learned §3.5
  */
 import clsx from 'clsx';
-import { Eye, EyeOff, Edit, Trash2, Server, Lock, Key, Copy, Fingerprint, X } from 'lucide-react';
+import { Edit, Trash2, Server, Lock, Key, Copy, Fingerprint, X } from 'lucide-react';
 import type { SshKey } from './types';
 import { getKeyTypeColor, getKeyTypeText } from './constants';
 import type { UsageServer } from './types';
 
 export interface SSHKeyCardProps {
   keyData: SshKey;
-  expandedKey: string | null;
-  setExpandedKey: (id: string | null) => void;
-  fullKeyData: (SshKey & { private_key: string }) | null | undefined;
   usageServers: UsageServer[] | null;
   usageLoading: boolean;
   setUsageServers: (servers: UsageServer[] | null) => void;
   handleViewUsage: (key: SshKey) => Promise<void>;
   handleCopyFingerprint: (fingerprint: string) => void;
-  handleCopyKey: () => void;
   handleEdit: (key: SshKey) => void;
   setDeleteConfirmKey: (k: SshKey | null) => void;
 }
 
 export function SSHKeyCard({
   keyData,
-  expandedKey,
-  setExpandedKey,
-  fullKeyData,
   usageServers,
   usageLoading,
   setUsageServers,
   handleViewUsage,
   handleCopyFingerprint,
-  handleCopyKey,
   handleEdit,
   setDeleteConfirmKey,
 }: SSHKeyCardProps) {
@@ -99,17 +91,6 @@ export function SSHKeyCard({
               </button>
             )}
             <button
-              onClick={() => setExpandedKey(expandedKey === keyData.id ? null : keyData.id)}
-              className="rounded-md p-1.5 text-[#94a3b8] transition-colors hover:bg-white/5 hover:text-[#60a5fa]"
-              title="查看私钥"
-            >
-              {expandedKey === keyData.id ? (
-                <EyeOff className="h-3.5 w-3.5" />
-              ) : (
-                <Eye className="h-3.5 w-3.5" />
-              )}
-            </button>
-            <button
               onClick={() => handleEdit(keyData)}
               className="rounded-md p-1.5 text-[#94a3b8] transition-colors hover:bg-white/5 hover:text-[#60a5fa]"
               title="编辑"
@@ -139,24 +120,6 @@ export function SSHKeyCard({
             >
               <Copy className="h-3 w-3" />
             </button>
-          </div>
-        )}
-
-        {expandedKey === keyData.id && fullKeyData && (
-          <div className="mt-4 p-4 bg-black/60 border border-border rounded-lg">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-xs text-text-tertiary">私钥内容</span>
-              <button
-                onClick={handleCopyKey}
-                className="text-xs text-text-tertiary hover:text-text-primary flex items-center gap-1 transition-colors"
-              >
-                <Copy className="w-3 h-3" />
-                复制私钥
-              </button>
-            </div>
-            <pre className="text-xs font-mono text-green-400 whitespace-pre-wrap break-all max-h-40 overflow-y-auto">
-              {fullKeyData.private_key}
-            </pre>
           </div>
         )}
 

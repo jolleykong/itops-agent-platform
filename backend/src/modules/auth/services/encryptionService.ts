@@ -16,12 +16,23 @@ let _legacyKey: Buffer | null = null;
 let _legacyKeyChecked = false;
 
 /**
- * 从环境变量 JWT_SECRET 派生加密密钥（v2，不落盘）
+ * 从环境变量派生加密密钥（v2，不落盘）
+ * 优先使用独立的 ENCRYPTION_SECRET（与 JWT_SECRET 解耦：JWT 密钥轮换不影响凭据密文）；
+ * 未设置时回退 JWT_SECRET（与历史行为一致，旧密文可解）。
  * 与 credentialService 使用相同的派生模式但不同盐值
  */
 function deriveEncryptionKey(): Buffer {
-  const secret = env.JWT_SECRET;
+  const secret = env.ENCRYPTION_SECRET || env.JWT_SECRET;
   return crypto.pbkdf2Sync(secret, 'encryption-service-v2-salt', 100000, KEY_LENGTH, 'sha512');
+}
+
+/**
+ * 历史回退密钥：ENCRYPTION_SECRET 引入前，v2 密文全部由 JWT_SECRET 派生。
+ * 设置了 ENCRYPTION_SECRET 后，解密旧密文时按需回退尝试该密钥。
+ */
+function getLegacyV2Key(): Buffer | null {
+  if (!env.ENCRYPTION_SECRET) return null; // 未设置时主密钥即历史密钥，无需回退
+  return crypto.pbkdf2Sync(env.JWT_SECRET, 'encryption-service-v2-salt', 100000, KEY_LENGTH, 'sha512');
 }
 
 /**
@@ -94,13 +105,26 @@ function decryptV2(encryptedString: string): string {
   const authTag = Buffer.from(parts[2], 'base64');
   const encryptedData = Buffer.from(parts[3], 'base64');
 
-  const decipher = crypto.createDecipheriv(ALGORITHM, getEncryptionKey(), iv);
-  decipher.setAuthTag(authTag);
+  // 主密钥优先；失败时回退历史密钥（ENCRYPTION_SECRET 引入前的 JWT_SECRET 派生密文）
+  const candidateKeys: Buffer[] = [getEncryptionKey()];
+  const legacy = getLegacyV2Key();
+  if (legacy) candidateKeys.push(legacy);
 
-  let decrypted = decipher.update(encryptedData);
-  decrypted = Buffer.concat([decrypted, decipher.final()]);
+  let lastError: unknown;
+  for (const key of candidateKeys) {
+    try {
+      const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
+      decipher.setAuthTag(authTag);
 
-  return decrypted.toString('utf8');
+      let decrypted = decipher.update(encryptedData);
+      decrypted = Buffer.concat([decrypted, decipher.final()]);
+
+      return decrypted.toString('utf8');
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError ?? new Error('Failed to decrypt data (v2)');
 }
 
 function decryptV1(encryptedString: string): string {

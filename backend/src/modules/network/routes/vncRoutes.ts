@@ -1,13 +1,14 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { Router } from 'express';
+import { Router, type Request, type Response } from 'express';
 import { decrypt, encrypt } from '../../auth/services/encryptionService';
 import { logger } from '../../../utils/logger';
+import { requireRole } from '../../../middleware/auth';
 import { serverCrudService } from '../../servers/services/serverCrudService';
 
 const router = Router();
 
-// 获取服务器 VNC 配置
-router.get('/config/:serverId', (req, res) => {
+// 获取服务器 VNC 配置（返回明文密码，仅 admin/operator 可读）
+router.get('/config/:serverId', requireRole('admin', 'operator'), (req: Request, res: Response) => {
   try {
     const server = serverCrudService.getVncConfig(req.params.serverId);
     if (!server) {
@@ -36,8 +37,8 @@ router.get('/config/:serverId', (req, res) => {
   }
 });
 
-// 更新服务器 VNC 配置
-router.put('/config/:serverId', (req, res) => {
+// 更新服务器 VNC 配置（仅 admin/operator 可改）
+router.put('/config/:serverId', requireRole('admin', 'operator'), (req: Request, res: Response) => {
   try {
     const { vnc_port, vnc_password } = req.body as { vnc_port?: number; vnc_password?: string };
 

@@ -5,6 +5,7 @@ import { validateBody, validateParams } from '../../../middleware/validation';
 import { requireRole } from '../../../middleware/auth';
 import { z } from 'zod';
 import { sshKeyCrudService } from '../services/sshKeyCrudService';
+import { createAuditLog } from '../../audit/services/auditService';
 
 const router = Router();
 
@@ -19,13 +20,15 @@ router.get('/', (_req: Request, res: Response) => {
   }
 });
 
-router.get('/:id', validateParams(sshKeyIdSchema), (req: Request, res: Response) => {
+// 安全：详情默认脱敏（不下发 password/private_key 密文），且仅 admin 可读
+router.get('/:id', requireRole('admin'), validateParams(sshKeyIdSchema), (req: Request & { user?: { id: string; username?: string } }, res: Response) => {
   try {
     const key = sshKeyCrudService.getKeyById(req.params.id);
     if (!key) {
       return res.status(404).json({ success: false, error: 'SSH key not found' });
     }
-    res.json({ success: true, data: key });
+    const { password: _pw, private_key: _pk, ...safe } = key as Record<string, unknown>;
+    res.json({ success: true, data: safe });
   } catch {
     res.status(500).json({ success: false, error: 'Failed to get SSH key' });
   }
@@ -53,12 +56,19 @@ router.post('/', requireRole('admin'), validateBody(z.object({
   return false;
 }, {
   message: 'SSH密钥类型必须提供私钥，用户名密码类型必须提供用户名和密码',
-})), (req: Request, res: Response) => {
+})), (req: Request & { user?: { id: string } }, res: Response) => {
   try {
     const result = sshKeyCrudService.createKey(req.body);
     if (!result.success) {
       return res.status(result.status).json({ success: false, error: result.error });
     }
+    createAuditLog({
+      user_id: req.user?.id || 'unknown',
+      action: 'sshkey-create',
+      resource_type: 'ssh_key',
+      resource_id: result.data.id,
+      details: { name: req.body.name, auth_type: req.body.auth_type } as any,
+    });
     res.json({ success: true, data: result.data });
   } catch {
     res.status(500).json({ success: false, error: 'Failed to create SSH key' });
@@ -72,24 +82,38 @@ router.put('/:id', requireRole('admin'), validateParams(sshKeyIdSchema), validat
   password: z.string().optional().nullable(),
   private_key: z.string().optional().nullable(),
   description: z.string().optional().nullable(),
-})), (req: Request, res: Response) => {
+})), (req: Request & { user?: { id: string } }, res: Response) => {
   try {
     const result = sshKeyCrudService.updateKey(req.params.id, req.body as any);
     if (!result.success) {
       return res.status(result.status).json({ success: false, error: result.error });
     }
+    createAuditLog({
+      user_id: req.user?.id || 'unknown',
+      action: 'sshkey-update',
+      resource_type: 'ssh_key',
+      resource_id: req.params.id,
+      details: { fields: Object.keys(req.body) } as any,
+    });
     res.json({ success: true });
   } catch {
     res.status(500).json({ success: false, error: 'Failed to update SSH key' });
   }
 });
 
-router.delete('/:id', requireRole('admin'), validateParams(sshKeyIdSchema), (req: Request, res: Response) => {
+router.delete('/:id', requireRole('admin'), validateParams(sshKeyIdSchema), (req: Request & { user?: { id: string } }, res: Response) => {
   try {
     const result = sshKeyCrudService.deleteKey(req.params.id);
     if (!result.success) {
       return res.status(result.status).json({ success: false, error: result.error });
     }
+    createAuditLog({
+      user_id: req.user?.id || 'unknown',
+      action: 'sshkey-delete',
+      resource_type: 'ssh_key',
+      resource_id: req.params.id,
+      details: {} as any,
+    });
     res.json({ success: true });
   } catch {
     res.status(500).json({ success: false, error: 'Failed to delete SSH key' });

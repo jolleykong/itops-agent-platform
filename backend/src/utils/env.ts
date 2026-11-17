@@ -13,6 +13,8 @@ interface EnvConfig {
   DATABASE_PATH: string;
   LOG_LEVEL: string;
   JWT_SECRET: string;
+  /** 凭据静态加密的独立密钥（可选，未设置时回退 JWT_SECRET 派生） */
+  ENCRYPTION_SECRET: string;
   JWT_EXPIRES_IN: string;
   ALLOWED_ORIGINS: string[];
   DOUBAO_API_KEY?: string;
@@ -173,6 +175,7 @@ function validateEnv(): EnvConfig {
     DATABASE_PATH: getEnv("DATABASE_PATH", "./data/app.db"),
     LOG_LEVEL: getEnv("LOG_LEVEL", "info"),
     JWT_SECRET: jwtSecret,
+  ENCRYPTION_SECRET: process.env.ENCRYPTION_SECRET || "",
     JWT_EXPIRES_IN: getEnv("JWT_EXPIRES_IN", "24h"),
     ALLOWED_ORIGINS: getEnv("ALLOWED_ORIGINS", "http://localhost:3000")
       .split(",")
