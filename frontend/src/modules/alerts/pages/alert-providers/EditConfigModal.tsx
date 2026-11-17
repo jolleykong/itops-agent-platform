@@ -281,8 +281,8 @@ export function EditConfigModal({
             </label>
           </div>
 
-          {/* Submit Buttons */}
-          <div className="flex justify-end gap-2 pt-4 border-t border-slate-700">
+          {/* Submit Buttons — sticky 常显，长内容滚动时不被卷走 */}
+          <div className="sticky bottom-0 -mx-5 -mb-5 px-5 py-3 bg-slate-800 border-t border-slate-700 flex justify-end gap-2 rounded-b-xl z-10">
             <button
               type="button"
               onClick={onClose}
