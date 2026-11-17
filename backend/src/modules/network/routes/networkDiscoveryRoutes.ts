@@ -98,12 +98,12 @@ router.get('/network-discovery/results', (req: Request, res: Response) => {
 // 将发现结果导入设备库
 router.post('/network-discovery/import', requireRole('admin'), (req: Request, res: Response) => {
   try {
-    const { result_ids, ssh_username, ssh_password, ssh_port } = req.body;
+    const { result_ids, ssh_username, ssh_password, ssh_port, snmp_credential_id } = req.body;
     if (!result_ids || !Array.isArray(result_ids) || result_ids.length === 0) {
       return res.status(400).json({ success: false, error: 'result_ids array is required' });
     }
 
-    const result = networkDiscoveryService.importToDevices(result_ids, ssh_username, ssh_password, ssh_port);
+    const result = networkDiscoveryService.importToDevices(result_ids, ssh_username, ssh_password, ssh_port, snmp_credential_id);
     res.json({ success: true, data: result });
   } catch (err: unknown) {
     logger.error('Failed to import discovery results:', err);

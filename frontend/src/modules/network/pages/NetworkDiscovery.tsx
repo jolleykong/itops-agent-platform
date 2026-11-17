@@ -76,12 +76,14 @@ export default function NetworkDiscovery() {
   // 导入对话框
   const [showImportModal, setShowImportModal] = useState(false);
   const [selectedResults, setSelectedResults] = useState<Set<string>>(new Set());
+  const [snmpCredChoice, setSnmpCredChoice] = useState<'auto' | string>('auto');
+  const [showSshConfig, setShowSshConfig] = useState(false);
   const [sshUsername, setSshUsername] = useState('admin');
   const [sshPassword, setSshPassword] = useState('');
   const [sshPort, setSshPort] = useState(22);
-  const [importResult, setImportResult] = useState<{ imported: number; errors: string[] } | null>(
-    null,
-  );
+  const [importResult, setImportResult] = useState<{
+    imported: number; credentials_linked?: number; errors: string[];
+  } | null>(null);
 
   // 查询
   const { data: credentials = [] } = useQuery({
@@ -158,6 +160,7 @@ export default function NetworkDiscovery() {
     mutationFn: () =>
       api.post('/network-discovery/import', {
         result_ids: Array.from(selectedResults),
+        snmp_credential_id: snmpCredChoice === 'auto' ? undefined : snmpCredChoice,
         ssh_username: sshUsername,
         ssh_password: sshPassword || undefined,
         ssh_port: sshPort,
@@ -540,34 +543,66 @@ export default function NetworkDiscovery() {
                 将选中 <strong className="text-text-primary">{selectedResults.size}</strong> 个 SNMP
                 可达设备导入到网络设备库
               </div>
-              <div className="grid grid-cols-3 gap-3">
-                <div>
-                  <label className="block text-xs text-text-secondary mb-1">SSH 用户名</label>
-                  <input
-                    type="text"
-                    value={sshUsername}
-                    onChange={(e) => setSshUsername(e.target.value)}
-                    className="w-full px-3 py-2 bg-background border border-border rounded-lg text-sm text-text-primary"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs text-text-secondary mb-1">SSH 密码（可选）</label>
-                  <input
-                    type="password"
-                    value={sshPassword}
-                    onChange={(e) => setSshPassword(e.target.value)}
-                    className="w-full px-3 py-2 bg-background border border-border rounded-lg text-sm text-text-primary"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs text-text-secondary mb-1">SSH 端口</label>
-                  <input
-                    type="number"
-                    value={sshPort}
-                    onChange={(e) => setSshPort(parseInt(e.target.value) || 22)}
-                    className="w-full px-3 py-2 bg-background border border-border rounded-lg text-sm text-text-primary"
-                  />
-                </div>
+
+              {/* SNMP 凭证关联（默认项） */}
+              <div>
+                <label className="block text-xs text-text-secondary mb-1.5">
+                  SNMP 凭证 <span className="text-emerald-400">（导入后自动关联，SNMP 轮询直接生效）</span>
+                </label>
+                <select
+                  value={snmpCredChoice}
+                  onChange={(e) => setSnmpCredChoice(e.target.value)}
+                  className="w-full px-3 py-2 bg-background border border-border rounded-lg text-sm text-text-primary focus:outline-none focus:border-primary"
+                >
+                  <option value="auto">自动匹配（按探测成功的 community）</option>
+                  {(credentials as SnmpCredential[]).map((cred) => (
+                    <option key={cred.id} value={cred.id}>
+                      {cred.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* SSH 配置（可选项，默认折叠） */}
+              <div className="border border-border rounded-lg">
+                <button
+                  onClick={() => setShowSshConfig((v) => !v)}
+                  className="w-full flex items-center justify-between px-3 py-2 text-xs text-text-secondary hover:text-text-primary transition-colors"
+                >
+                  <span>SSH 配置（可选，用于后续命令下发/配置备份）</span>
+                  <span className="text-text-tertiary">{showSshConfig ? '收起 ▲' : '展开 ▼'}</span>
+                </button>
+                {showSshConfig && (
+                  <div className="px-3 pb-3 grid grid-cols-3 gap-3">
+                    <div>
+                      <label className="block text-xs text-text-secondary mb-1">SSH 用户名</label>
+                      <input
+                        type="text"
+                        value={sshUsername}
+                        onChange={(e) => setSshUsername(e.target.value)}
+                        className="w-full px-3 py-2 bg-background border border-border rounded-lg text-sm text-text-primary"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-text-secondary mb-1">SSH 密码（可选）</label>
+                      <input
+                        type="password"
+                        value={sshPassword}
+                        onChange={(e) => setSshPassword(e.target.value)}
+                        className="w-full px-3 py-2 bg-background border border-border rounded-lg text-sm text-text-primary"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs text-text-secondary mb-1">SSH 端口</label>
+                      <input
+                        type="number"
+                        value={sshPort}
+                        onChange={(e) => setSshPort(parseInt(e.target.value) || 22)}
+                        className="w-full px-3 py-2 bg-background border border-border rounded-lg text-sm text-text-primary"
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
 
               {importResult && (
@@ -582,6 +617,11 @@ export default function NetworkDiscovery() {
                   {importResult.imported > 0
                     ? `✅ 成功导入 ${importResult.imported} 个设备`
                     : '⚠️ 没有新设备被导入（可能已有相同 IP 的设备）'}
+                  {typeof importResult.credentials_linked === 'number' && (
+                    <div className="mt-1 text-xs">
+                      🔗 已自动关联 SNMP 凭证 {importResult.credentials_linked} 个设备
+                    </div>
+                  )}
                   {importResult.errors.length > 0 && importResult.errors.length <= 5 && (
                     <div className="mt-1 text-xs text-text-secondary">
                       {importResult.errors.map((e, i) => (
@@ -603,6 +643,9 @@ export default function NetworkDiscovery() {
                 onClick={() => {
                   setShowImportModal(false);
                   setImportResult(null);
+                  setSnmpCredChoice('auto');
+                  setShowSshConfig(false);
+                  setSshPassword('');
                 }}
                 className="px-4 py-2 text-sm text-text-secondary hover:text-text-primary"
               >

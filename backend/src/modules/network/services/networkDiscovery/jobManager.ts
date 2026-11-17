@@ -219,10 +219,15 @@ export async function startJob(deps: JobManagerDeps, jobId: string): Promise<voi
 
 /**
  * 获取扫描结果（支持分页和按 job_id 过滤）
+ * community 为探测时所用明文凭证，不下发前端（凭据安全加固 2026-11-17）
  */
 export function getResults(options: { jobId?: string; limit?: number; offset?: number; status?: string }): { results: DiscoveryResult[]; total: number } {
   const result = networkDeviceRepository.listDiscoveryResults(options);
-  return { results: result.results as DiscoveryResult[], total: result.total };
+  const results = (result.results as DiscoveryResult[]).map((r) => {
+    const { community: _community, ...rest } = r;
+    return rest as DiscoveryResult;
+  });
+  return { results, total: result.total };
 }
 
 /**
@@ -260,11 +265,81 @@ export function deleteJob(deps: JobManagerDeps, jobId: string): void {
 }
 
 /**
- * 将发现结果导入设备库
+ * 为新导入的设备自动关联 SNMP 凭证
+ *
+ * 策略：
+ * 1. 前端强制指定凭证（forcedCredentialId）→ 直接复制
+ * 2. v2c/v1：按结果里记录的 community（探测成功时的明文）与凭证库解密比对 + 版本一致
+ * 3. v3：结果无 community，若凭证库中恰好只有一个 v3 凭证则关联
+ *
+ * 复制凭证敏感字段（repo 层返回/接收的均为密文，无需二次加解密），
+ * 关联方式 = 新建一条 device_id 指向新设备的凭证记录（snmpService.getCredential 走此关联）。
  */
-export function importToDevices(resultIds: string[], sshUsername?: string, sshPassword?: string, sshPort?: number): { imported: number; errors: string[] } {
+function linkSnmpCredential(
+  deviceId: string, result: DiscoveryResult, forcedCredentialId?: string
+): boolean {
+  try {
+    let source: SnmpCredentialRecord | undefined;
+    if (forcedCredentialId) {
+      source = snmpCredentialsRepo.getById(forcedCredentialId);
+    }
+    if (!source) {
+      const candidates = snmpCredentialsRepo.list();
+      if (result.snmp_version === 'v3') {
+        const v3List = candidates.filter(c => c.snmp_version === 'v3');
+        if (v3List.length === 1) {
+          source = snmpCredentialsRepo.getById(v3List[0].id);
+        }
+      } else if (result.community) {
+        const wantVersion = result.snmp_version || 'v2c';
+        for (const c of candidates) {
+          if ((c.snmp_version || 'v2c') !== wantVersion) continue;
+          const full = snmpCredentialsRepo.getById(c.id);
+          if (!full?.community) continue;
+          try {
+            if (decrypt(full.community) === result.community) {
+              source = full;
+              break;
+            }
+          } catch { /* 解密失败跳过该凭证 */ }
+        }
+      }
+    }
+    if (!source) return false;
+
+    snmpCredentialsRepo.create({
+      id: randomUUID(),
+      device_id: deviceId,
+      name: `${result.sys_name || result.ip_address}-snmp`,
+      community: source.community ?? null,
+      snmp_version: source.snmp_version,
+      snmp_port: source.snmp_port,
+      snmp_user: source.snmp_user ?? null,
+      snmp_auth_protocol: source.snmp_auth_protocol ?? null,
+      snmp_auth_key: source.snmp_auth_key ?? null,
+      snmp_priv_protocol: source.snmp_priv_protocol ?? null,
+      snmp_priv_key: source.snmp_priv_key ?? null,
+    });
+    return true;
+  } catch (err: unknown) {
+    logger.warn(`Failed to link SNMP credential for device ${deviceId}: ${getErrorMessage(err)}`);
+    return false;
+  }
+}
+
+/**
+ * 将发现结果导入设备库
+ *
+ * 2026-11-17 增强：导入时自动关联 SNMP 凭证（按探测成功所用 community 匹配，
+ * 或前端强制指定），入库设备的 SNMP 轮询不再依赖 default 兜底凭证。
+ */
+export function importToDevices(
+  resultIds: string[], sshUsername?: string, sshPassword?: string, sshPort?: number,
+  snmpCredentialId?: string
+): { imported: number; errors: string[]; credentials_linked: number } {
   const errors: string[] = [];
   let imported = 0;
+  let credentialsLinked = 0;
 
   for (const resultId of resultIds) {
     try {
@@ -298,10 +373,15 @@ export function importToDevices(resultIds: string[], sshUsername?: string, sshPa
       });
 
       imported++;
+
+      // SNMP 可达的设备自动关联探测成功的凭证
+      if (result.status === 'snmp_ok' && linkSnmpCredential(deviceId, result, snmpCredentialId)) {
+        credentialsLinked++;
+      }
     } catch (err: unknown) {
       errors.push(`${resultId}: ${getErrorMessage(err)}`);
     }
   }
 
-  return { imported, errors };
+  return { imported, errors, credentials_linked: credentialsLinked };
 }

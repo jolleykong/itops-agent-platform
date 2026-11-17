@@ -119,10 +119,10 @@ class NetworkDiscoveryService {
   }
 
   /**
-   * 将发现结果导入设备库
+   * 将发现结果导入设备库（snmpCredentialId 可选：强制指定关联凭证）
    */
-  importToDevices(resultIds: string[], sshUsername?: string, sshPassword?: string, sshPort?: number): { imported: number; errors: string[] } {
-    return importToDevicesFn(resultIds, sshUsername, sshPassword, sshPort);
+  importToDevices(resultIds: string[], sshUsername?: string, sshPassword?: string, sshPort?: number, snmpCredentialId?: string): { imported: number; errors: string[]; credentials_linked: number } {
+    return importToDevicesFn(resultIds, sshUsername, sshPassword, sshPort, snmpCredentialId);
   }
 }
 
