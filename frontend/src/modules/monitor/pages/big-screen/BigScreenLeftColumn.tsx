@@ -9,7 +9,8 @@
  *
  * 拆分原则遵循 architecture.md §3.4.1 + 第 3 条「向后兼容的 import 路径」
  */
-import { Cpu, MemoryStick, HardDrive, Wifi, AlertCircle, Play, ChevronDown } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { Cpu, MemoryStick, HardDrive, Wifi, AlertCircle, Play, ChevronDown, Search } from 'lucide-react';
 import AnimatedLineChart from '../../components/AnimatedLineChart';
 
 export interface BigScreenLeftColumnProps {
@@ -90,6 +91,38 @@ export default function BigScreenLeftColumn({
   const servers = serverMetricsData?.available_servers || [];
   const local = servers.find((s) => s.is_local);
 
+  // ===== 服务器可搜索下拉（数百台规模下原生 select 无法滚动/搜索） =====
+  const [ddOpen, setDdOpen] = useState(false);
+  const [ddQuery, setDdQuery] = useState('');
+  const ddRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!ddOpen) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (ddRef.current && !ddRef.current.contains(e.target as Node)) setDdOpen(false);
+    };
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [ddOpen]);
+
+  const currentLabel =
+    selectedServerId === 'auto'
+      ? local
+        ? `本机（${local.name}）`
+        : '本机（自动检测）'
+      : selectedServerId === '__all__'
+        ? '所有服务器（聚合）'
+        : servers.find((s) => s.id === selectedServerId)?.name || selectedServerId;
+  const filteredServers = servers.filter(
+    (s) => !ddQuery || s.name.toLowerCase().includes(ddQuery.toLowerCase()),
+  );
+
+  const pick = (id: string) => {
+    setSelectedServerId(id);
+    setDdOpen(false);
+    setDdQuery('');
+  };
+
   const metricConfigs: MetricConfig[] = [
     {
       label: 'CPU',
@@ -151,24 +184,75 @@ export default function BigScreenLeftColumn({
             系统资源监控
           </div>
           <div className="flex items-center gap-2">
-            {/* 服务器选择下拉框 */}
-            <div className="relative">
-              <select
-                value={selectedServerId}
-                onChange={(e) => setSelectedServerId(e.target.value)}
-                className="appearance-none bg-slate-900/60 border border-border rounded-md pl-2 pr-7 py-1 text-xs text-text-primary hover:border-blue-500/40 focus:outline-none focus:border-blue-500/60 cursor-pointer max-w-[180px]"
+            {/* 服务器选择：可搜索下拉（原生 select 的弹出列表由 OS 渲染，数百台无法使用） */}
+            <div className="relative" ref={ddRef}>
+              <button
+                type="button"
+                onClick={() => setDdOpen((v) => !v)}
+                className="appearance-none bg-slate-900/60 border border-border rounded-md pl-2 pr-7 py-1 text-xs text-text-primary hover:border-blue-500/40 focus:outline-none focus:border-blue-500/60 cursor-pointer max-w-[220px] flex items-center justify-between gap-1"
                 title="选择要监控的服务器"
               >
-                <option value="auto">{local ? `本机（${local.name}）` : '本机（自动检测）'}</option>
-                {servers.length > 1 && <option value="__all__">所有服务器（聚合）</option>}
-                {servers.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}
-                    {s.is_local ? ' ★' : ''}
-                  </option>
-                ))}
-              </select>
-              <ChevronDown className="w-3.5 h-3.5 text-text-tertiary absolute right-1.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <span className="truncate">{currentLabel}</span>
+                <ChevronDown
+                  className={`w-3.5 h-3.5 text-text-tertiary shrink-0 transition-transform ${ddOpen ? 'rotate-180' : ''}`}
+                />
+              </button>
+              {ddOpen && (
+                <div className="absolute right-0 top-full mt-1 w-72 bg-slate-900 border border-border rounded-lg shadow-xl z-30 overflow-hidden">
+                  <div className="relative p-2 border-b border-border">
+                    <Search className="w-3.5 h-3.5 text-text-tertiary absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input
+                      autoFocus
+                      type="text"
+                      value={ddQuery}
+                      onChange={(e) => setDdQuery(e.target.value)}
+                      placeholder="搜索服务器名称..."
+                      className="w-full bg-slate-800/60 border border-border rounded-md pl-7 pr-2 py-1.5 text-xs text-text-primary focus:outline-none focus:border-blue-500/60"
+                    />
+                  </div>
+                  <div className="max-h-72 overflow-y-auto scrollbar-thin py-1">
+                    <button
+                      type="button"
+                      onClick={() => pick('auto')}
+                      className={`w-full text-left px-3 py-1.5 text-xs hover:bg-slate-800 ${
+                        selectedServerId === 'auto' ? 'text-blue-400 bg-slate-800/50' : 'text-text-primary'
+                      }`}
+                    >
+                      {local ? `本机（${local.name}）` : '本机（自动检测）'}
+                    </button>
+                    {servers.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => pick('__all__')}
+                        className={`w-full text-left px-3 py-1.5 text-xs hover:bg-slate-800 ${
+                          selectedServerId === '__all__' ? 'text-blue-400 bg-slate-800/50' : 'text-text-primary'
+                        }`}
+                      >
+                        所有服务器（聚合）
+                      </button>
+                    )}
+                    {filteredServers.map((s) => (
+                      <button
+                        key={s.id}
+                        type="button"
+                        onClick={() => pick(s.id)}
+                        className={`w-full text-left px-3 py-1.5 text-xs hover:bg-slate-800 truncate ${
+                          selectedServerId === s.id ? 'text-blue-400 bg-slate-800/50' : 'text-text-primary'
+                        }`}
+                        title={s.name}
+                      >
+                        {s.name}
+                        {s.is_local ? ' ★' : ''}
+                      </button>
+                    ))}
+                    {filteredServers.length === 0 && (
+                      <div className="px-3 py-3 text-xs text-text-tertiary text-center">
+                        无匹配的服务器
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
             {serverMetricsData?.has_real_data ? (
               <span className="text-xs px-2 py-0.5 rounded bg-green-500/20 text-green-400 border border-green-500/30">

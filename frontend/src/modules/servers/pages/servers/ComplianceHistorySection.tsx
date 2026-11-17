@@ -9,6 +9,19 @@ interface ComplianceHistorySectionProps {
   complianceHistory: ComplianceCheck[] | undefined;
 }
 
+/**
+ * 把 check_results（JSON 字符串）格式化为可读文本：
+ * 成功解析则 2 空格缩进美化；解析失败（历史遗留的非 JSON 内容）原样返回。
+ */
+function formatCheckResults(raw: string): string {
+  try {
+    const parsed = JSON.parse(raw);
+    return JSON.stringify(parsed, null, 2);
+  } catch {
+    return raw;
+  }
+}
+
 export function ComplianceHistorySection({
   selectedServer,
   complianceHistory,
@@ -77,8 +90,8 @@ export function ComplianceHistorySection({
                 <summary className="text-xs text-text-secondary cursor-pointer hover:text-text-primary">
                   查看结果
                 </summary>
-                <pre className="mt-2 bg-surface p-3 rounded text-xs overflow-x-auto text-text-primary font-mono max-h-60 overflow-y-auto">
-                  {check.check_results}
+                <pre className="mt-2 bg-surface p-3 rounded text-xs overflow-x-auto text-text-primary font-mono max-h-96 overflow-y-auto whitespace-pre-wrap break-all">
+                  {formatCheckResults(check.check_results)}
                 </pre>
               </details>
             )}
