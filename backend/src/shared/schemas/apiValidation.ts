@@ -486,7 +486,8 @@ export const zabbixSchemas = {
   hosts: zabbixClientOptions.extend({
     filter: z.record(z.unknown()).optional(),
   }),
-  import: zabbixClientOptions.extend({
+  // 导入：url 可选（缺省时回退后端持久化配置），凭据字段均可选
+  import: zabbixClientOptions.partial().extend({
     hostIds: z.array(z.string().min(1).max(100)).optional(),
     dryRun: z.boolean().optional(),
   }),
