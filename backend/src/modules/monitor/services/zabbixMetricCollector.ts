@@ -123,6 +123,8 @@ class ZabbixMetricCollector {
   /** 拉取一个主机的全部监控项最新值 */
   private async fetchItems(auth: string, hostid: string): Promise<ZabbixItem[]> {
     const result = await zabbixService.getItems(auth, [hostid], {
+      // 必须显式带 URL（rpcRequest 无 url 直接报「Zabbix URL 未配置」）
+      url: zabbixConnectionStore.get()?.url ?? '',
       output: ['itemid', 'hostid', 'key_', 'lastvalue', 'lastclock', 'units', 'state', 'status', 'type'],
     });
     if (!result.success || !result.data) {
