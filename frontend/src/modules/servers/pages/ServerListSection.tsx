@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, Fragment, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import {
@@ -40,6 +40,9 @@ interface ServerListSectionProps {
   onDelete: (id: string, name: string) => void;
   onOpenAiCommand: (server: ServerType) => void;
   onSelectForCommand: (server: ServerType) => void;
+  // 命令面板就地展开：与该 id 相同的卡片下方插入 commandPanel（col-span-full）
+  commandPanelServer?: ServerType | null;
+  commandPanel?: ReactNode;
   onRunCompliance: (server: ServerType) => void;
   onViewCommandHistory: (server: ServerType) => void;
   onViewComplianceHistory: (server: ServerType) => void;
@@ -70,6 +73,8 @@ export function ServerListSection({
   onDelete,
   onOpenAiCommand,
   onSelectForCommand,
+  commandPanelServer,
+  commandPanel,
   onRunCompliance,
   onViewCommandHistory,
   onViewComplianceHistory,
@@ -352,15 +357,16 @@ export function ServerListSection({
               </div>
             ) : (
               visibleServers.map((server) => (
+                <Fragment key={server.id}>
                 <div
-                  key={server.id}
                   className={clsx(
-                    'relative bg-surface border rounded-lg p-4 min-w-0 overflow-hidden',
+                    'relative bg-surface border rounded-lg p-4 min-w-0 overflow-hidden transition-shadow',
                     server.os_type === 'linux'
                       ? 'border-yellow-500/30'
                       : server.os_type === 'windows'
                         ? 'border-blue-500/30'
                         : 'border-border',
+                    commandPanelServer?.id === server.id && 'ring-2 ring-primary/60 shadow-lg',
                   )}
                 >
                   {/* 操作系统左侧标识条 */}
@@ -599,6 +605,13 @@ export function ServerListSection({
                     </button>
                   </div>
                 </div>
+                {/* 命令面板就地展开：紧跟被选中的服务器卡片下方，占满整行 */}
+                {commandPanelServer?.id === server.id && commandPanel && (
+                  <div id="command-section" className="col-span-full space-y-4">
+                    {commandPanel}
+                  </div>
+                )}
+                </Fragment>
               ))
             )}
           </div>

@@ -92,8 +92,8 @@ export function CommandSection({
         </div>
       )}
 
-      {/* 快速命令执行区域（id 供"执行命令"按钮点击后 scrollIntoView 定位） */}
-      <div id="command-section" className="bg-surface border border-border rounded-lg p-6">
+      {/* 快速命令执行区域 */}
+      <div className="bg-surface border border-border rounded-lg p-6">
         <h3 className="text-lg font-semibold text-text-primary mb-4">
           在 {selectedServer.name} 上执行命令
         </h3>

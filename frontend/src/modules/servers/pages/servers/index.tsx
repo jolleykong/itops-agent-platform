@@ -77,9 +77,6 @@ export default function Servers() {
     navigate, queryClient,
   } = actions;
 
-  const showCommandSection =
-    selectedServer && (activeTab === 'servers' || activeTab === 'compliance');
-
   return (
     <div className="h-full overflow-auto p-6">
       <div className="space-y-6">
@@ -131,15 +128,34 @@ export default function Servers() {
               }}
               onOpenAiCommand={openAiCommandForServer}
               onSelectForCommand={(server) => {
+                // 再点一次同一台 = 收起面板
+                if (selectedServer?.id === server.id) {
+                  setSelectedServer(null);
+                  return;
+                }
                 setSelectedServer(server);
                 setCommandResult(null);
-                // 命令区渲染在服务器列表底部，几百台规模下不在视口内 → 自动滚动定位
+                // 面板就地展开在该卡片下方；若卡片贴近视口底部，轻推滚动让面板可见
                 setTimeout(() => {
                   document
                     .getElementById('command-section')
-                    ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
                 }, 80);
               }}
+              commandPanelServer={selectedServer}
+              commandPanel={
+                selectedServer && (activeTab === 'servers' || activeTab === 'compliance') ? (
+                  <CommandSection
+                    selectedServer={selectedServer}
+                    command={command}
+                    onCommandChange={setCommand}
+                    commandResult={commandResult}
+                    onClearResult={() => setCommandResult(null)}
+                    isExecuting={isExecuting}
+                    onExecute={handleExecuteCommand}
+                  />
+                ) : null
+              }
               onRunCompliance={handleRunCompliance}
               onViewCommandHistory={(server) => {
                 setSelectedServer(server);
@@ -150,17 +166,6 @@ export default function Servers() {
                 setActiveTab('compliance-history');
               }}
             />
-            {showCommandSection && (
-              <CommandSection
-                selectedServer={selectedServer}
-                command={command}
-                onCommandChange={setCommand}
-                commandResult={commandResult}
-                onClearResult={() => setCommandResult(null)}
-                isExecuting={isExecuting}
-                onExecute={handleExecuteCommand}
-              />
-            )}
           </>
         )}
 
