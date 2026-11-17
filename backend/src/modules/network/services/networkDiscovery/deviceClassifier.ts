@@ -100,10 +100,12 @@ function matchKeyword(text: string, patterns: RegExp[]): boolean {
 
 function matchOid(oid: string, prefixes: string[]): boolean {
   if (!oid) return false;
+  // net-snmp 返回的 OID 无前导点（如 1.3.6.1.4.1.2.3.51.3），统一归一化再比对
+  const o = oid.startsWith('.') ? oid.slice(1) : oid;
   for (const ex of OID_EXCLUSIONS) {
-    if (oid.startsWith(ex)) return false;
+    if (o.startsWith(ex.startsWith('.') ? ex.slice(1) : ex)) return false;
   }
-  return prefixes.some((p) => oid.startsWith(p));
+  return prefixes.some((p) => o.startsWith(p.startsWith('.') ? p.slice(1) : p));
 }
 
 /**

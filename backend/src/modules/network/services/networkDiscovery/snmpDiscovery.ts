@@ -113,11 +113,14 @@ export function resolveVendor(sysObjectId: string): { vendor: string; model?: st
   };
 
   for (const [prefix, vendor] of Object.entries(vendorMap)) {
-    if (sysObjectId.startsWith(prefix)) {
+    // net-snmp 返回的 OID 无前导点，归一化后比对
+    const o = sysObjectId.startsWith('.') ? sysObjectId.slice(1) : sysObjectId;
+    const p = prefix.startsWith('.') ? prefix.slice(1) : prefix;
+    if (o.startsWith(p)) {
       return { vendor };
     }
   }
-  if (sysObjectId.startsWith('.1.3.6.1.4.1')) {
+  if (sysObjectId.startsWith('.1.3.6.1.4.1') || sysObjectId.startsWith('1.3.6.1.4.1')) {
     return { vendor: 'Other (Private Enterprise)' };
   }
   return { vendor: 'Unknown' };
