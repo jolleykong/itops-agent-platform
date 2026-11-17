@@ -14,6 +14,7 @@ import { networkDeviceRepository, snmpCredentialsRepo } from '../../../../reposi
 import type { SnmpCredentialRecord } from '../../../../repositories/snmpRepository';
 import { buildPingCommand, isPingSuccess, calculateIpRange, generateIpList } from './icmpDiscovery';
 import { trySnmpConnect } from './snmpDiscovery';
+import { classifyDevice } from './deviceClassifier';
 import type { DiscoveryJob, DiscoveryResult } from './networkDiscoveryService';
 
 const execAsync = promisify(exec);
@@ -106,6 +107,9 @@ async function pingAndDiscover(
     interface_count: snmpResult?.interfaceCount || null,
     vendor: snmpResult?.vendor || null,
     model: snmpResult?.model || null,
+    device_type: snmpResult
+      ? classifyDevice(snmpResult.sysObjectID, snmpResult.sysDescr, snmpResult.sysName)
+      : null,
     response_time_ms: responseTimeMs,
   });
 
@@ -158,6 +162,7 @@ export async function startJob(deps: JobManagerDeps, jobId: string): Promise<voi
   if (job.status !== 'pending' && job.status !== 'completed') throw new Error(`Job ${jobId} is ${job.status}, cannot start`);
 
   // 更新状态
+  networkDeviceRepository.ensureDeviceTypeColumn();
   networkDeviceRepository.updateDiscoveryJobStatus(jobId, 'running');
   networkDeviceRepository.deleteDiscoveryResultsByJob(jobId);
 
@@ -220,10 +225,20 @@ export async function startJob(deps: JobManagerDeps, jobId: string): Promise<voi
 /**
  * 获取扫描结果（支持分页和按 job_id 过滤）
  * community 为探测时所用明文凭证，不下发前端（凭据安全加固 2026-11-17）
+ *
+ * 设备自动分类（2026-11-17）：device_type 为空且已有 SNMP 信息的历史结果，
+ * 惰性回填分类标签，避免旧扫描必须重跑才能看到类型徽标。
  */
 export function getResults(options: { jobId?: string; limit?: number; offset?: number; status?: string }): { results: DiscoveryResult[]; total: number } {
+  networkDeviceRepository.ensureDeviceTypeColumn();
   const result = networkDeviceRepository.listDiscoveryResults(options);
   const results = (result.results as DiscoveryResult[]).map((r) => {
+    if (!r.device_type && r.sys_object_id) {
+      r.device_type = classifyDevice(r.sys_object_id, r.sys_descr, r.sys_name);
+      try {
+        networkDeviceRepository.updateDiscoveryResultDeviceType(r.id, r.device_type);
+      } catch { /* 回填失败不影响读取 */ }
+    }
     const { community: _community, ...rest } = r;
     return rest as DiscoveryResult;
   });

@@ -62,6 +62,16 @@ export const networkDeviceDiscoveryRepo = {
 
   // ── Discovery Results ──
 
+  /** 确保 device_type 列存在（2026-11-17 设备自动分类，运行时 ALTER，幂等） */
+  ensureDeviceTypeColumn(): void {
+    try {
+      const cols = db.prepare("PRAGMA table_info('network_discovery_results')").all() as { name: string }[];
+      if (!cols.find((c) => c.name === 'device_type')) {
+        db.exec('ALTER TABLE network_discovery_results ADD COLUMN device_type TEXT');
+      }
+    } catch { /* 表可能还不存在 */ }
+  },
+
   /** 删除任务关联的扫描结果 */
   deleteDiscoveryResultsByJob(jobId: string): void {
     db.prepare('DELETE FROM network_discovery_results WHERE job_id = ?').run(jobId);
@@ -81,18 +91,19 @@ export const networkDeviceDiscoveryRepo = {
     sys_name?: string | null; sys_descr?: string | null; sys_location?: string | null;
     sys_object_id?: string | null; snmp_version?: string | null; community?: string | null;
     interface_count?: number | null; vendor?: string | null; model?: string | null;
+    device_type?: string | null;
     response_time_ms: number;
   }): void {
     db.prepare(`
       INSERT INTO network_discovery_results (id, job_id, ip_address, status, sys_name, sys_descr, sys_location, sys_object_id,
-        snmp_version, community, interface_count, vendor, model, response_time_ms, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'))
+        snmp_version, community, interface_count, vendor, model, device_type, response_time_ms, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now','localtime'))
     `).run(
       result.id, result.job_id, result.ip_address, result.status,
       result.sys_name ?? null, result.sys_descr ?? null, result.sys_location ?? null,
       result.sys_object_id ?? null, result.snmp_version ?? null, result.community ?? null,
       result.interface_count ?? null, result.vendor ?? null, result.model ?? null,
-      result.response_time_ms,
+      result.device_type ?? null, result.response_time_ms,
     );
   },
 
@@ -119,6 +130,11 @@ export const networkDeviceDiscoveryRepo = {
 
     const results = db.prepare(sql).all(...params) as NetworkDiscoveryResult[];
     return { results, total };
+  },
+
+  /** 回填扫描结果的设备分类标签 */
+  updateDiscoveryResultDeviceType(id: string, deviceType: string): void {
+    db.prepare('UPDATE network_discovery_results SET device_type = ? WHERE id = ?').run(deviceType, id);
   },
 
   /** 获取单个扫描结果 */

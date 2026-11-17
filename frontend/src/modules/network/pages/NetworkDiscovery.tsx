@@ -52,9 +52,28 @@ interface DiscoveryResult {
   model?: string;
   snmp_version?: string;
   interface_count?: number;
+  device_type?: string | null;
   response_time_ms?: number;
   created_at: string;
 }
+
+const DEVICE_TYPE_LABELS: Record<string, string> = {
+  network: '网络设备',
+  'server-bmc': '服务器 BMC',
+  'server-os': '服务器 OS',
+  storage: '存储设备',
+  printer: '打印机',
+  unknown: '未知',
+};
+
+const DEVICE_TYPE_BADGE_STYLE: Record<string, string> = {
+  network: 'bg-cyan-500/10 text-cyan-400 border-cyan-500/30',
+  'server-bmc': 'bg-violet-500/10 text-violet-400 border-violet-500/30',
+  'server-os': 'bg-blue-500/10 text-blue-400 border-blue-500/30',
+  storage: 'bg-amber-500/10 text-amber-400 border-amber-500/30',
+  printer: 'bg-pink-500/10 text-pink-400 border-pink-500/30',
+  unknown: 'bg-slate-500/10 text-text-tertiary border-slate-500/30',
+};
 
 interface SnmpCredential {
   id: string;
@@ -99,6 +118,8 @@ export default function NetworkDiscovery() {
 
   // 选中的任务的结果
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
+  // 设备类型筛选（null = 全部）
+  const [typeFilter, setTypeFilter] = useState<string | null>(null);
   const jobsList = Array.isArray(jobs) ? jobs : [];
   const selectedJob = jobsList.find((j: DiscoveryJob) => j.id === selectedJobId) as
     DiscoveryJob | undefined;
@@ -119,6 +140,19 @@ export default function NetworkDiscovery() {
 
   const results = resultsData?.data || [];
   const resultTotal = resultsData?.total || 0;
+
+  // 类型统计 + 筛选（未知类型归入 unknown）
+  const typeCounts: Record<string, number> = {};
+  for (const r of results) {
+    const t = r.device_type || 'unknown';
+    typeCounts[t] = (typeCounts[t] || 0) + 1;
+  }
+  const typeOrder = ['network', 'server-bmc', 'server-os', 'storage', 'printer', 'unknown'];
+  const visibleTypes = typeOrder.filter((t) => typeCounts[t] > 0);
+  const filteredResults = typeFilter
+    ? results.filter((r) => (r.device_type || 'unknown') === typeFilter)
+    : results;
+  const filteredSnmpOk = filteredResults.filter((r) => r.status === 'snmp_ok');
 
   // 创建扫描
   const createJob = useMutation({
@@ -394,23 +428,53 @@ export default function NetworkDiscovery() {
                   在线: {results.filter((r) => r.status !== 'offline').length} / SNMP可达:{' '}
                   {results.filter((r) => r.status === 'snmp_ok').length}
                 </span>
-                {results.filter((r) => r.status === 'snmp_ok').length > 0 && (
+                {filteredSnmpOk.length > 0 && (
                   <button
                     onClick={() => {
                       setShowImportModal(true);
-                      setSelectedResults(
-                        new Set(results.filter((r) => r.status === 'snmp_ok').map((r) => r.id)),
-                      );
+                      setSelectedResults(new Set(filteredSnmpOk.map((r) => r.id)));
                     }}
                     className="px-3 py-1.5 bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 rounded-lg hover:bg-emerald-500/20 transition-all text-xs flex items-center gap-1.5"
                   >
                     <Download className="w-3.5 h-3.5" />
-                    导入 SNMP 可达设备（{results.filter((r) => r.status === 'snmp_ok').length} 个）
+                    导入 SNMP 可达设备
+                    {typeFilter ? `（${DEVICE_TYPE_LABELS[typeFilter] || typeFilter} · ${filteredSnmpOk.length} 个）` : `（${filteredSnmpOk.length} 个）`}
                   </button>
                 )}
               </div>
             )}
           </div>
+
+          {/* 设备类型筛选（发现时按 sysObjectID/sysDescr 自动分类） */}
+          {selectedJob && visibleTypes.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5 mb-3">
+              <button
+                onClick={() => setTypeFilter(null)}
+                className={clsx(
+                  'px-2 py-0.5 rounded-full text-xs border transition-all',
+                  typeFilter === null
+                    ? 'bg-primary/10 border-primary/40 text-text-primary'
+                    : 'bg-background border-border text-text-secondary hover:border-primary/30',
+                )}
+              >
+                全部 {resultTotal}
+              </button>
+              {visibleTypes.map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setTypeFilter(typeFilter === t ? null : t)}
+                  className={clsx(
+                    'px-2 py-0.5 rounded-full text-xs border transition-all',
+                    typeFilter === t
+                      ? DEVICE_TYPE_BADGE_STYLE[t] + ' font-medium'
+                      : 'bg-background border-border text-text-secondary hover:border-primary/30',
+                  )}
+                >
+                  {DEVICE_TYPE_LABELS[t] || t} {typeCounts[t]}
+                </button>
+              ))}
+            </div>
+          )}
 
           {!selectedJobId ? (
             <div className="flex flex-col items-center justify-center py-12 text-text-tertiary">
@@ -428,7 +492,7 @@ export default function NetworkDiscovery() {
             </div>
           ) : (
             <div className="space-y-2 max-h-[500px] overflow-y-auto">
-              {results
+              {filteredResults
                 .sort((a, b) => {
                   const order: Record<string, number> = {
                     snmp_ok: 0,
@@ -483,6 +547,16 @@ export default function NetworkDiscovery() {
                           )}
                         </div>
                         <div className="flex items-center gap-2 mt-0.5 text-xs text-text-tertiary">
+                          {result.device_type && (
+                            <span
+                              className={clsx(
+                                'px-1.5 py-px rounded border text-[11px]',
+                                DEVICE_TYPE_BADGE_STYLE[result.device_type] || DEVICE_TYPE_BADGE_STYLE.unknown,
+                              )}
+                            >
+                              {DEVICE_TYPE_LABELS[result.device_type] || result.device_type}
+                            </span>
+                          )}
                           {result.vendor && <span>{result.vendor}</span>}
                           {result.model && (
                             <span className="truncate max-w-[200px]">{result.model}</span>
@@ -543,6 +617,15 @@ export default function NetworkDiscovery() {
                 将选中 <strong className="text-text-primary">{selectedResults.size}</strong> 个 SNMP
                 可达设备导入到网络设备库
               </div>
+
+              {results.filter((r) => selectedResults.has(r.id)).some(
+                (r) => r.device_type === 'server-bmc' || r.device_type === 'server-os',
+              ) && (
+                <div className="text-xs text-amber-400 bg-amber-500/5 border border-amber-500/20 rounded-lg px-3 py-2">
+                  ⚠️ 选中集合中包含服务器 BMC / OS 设备，当前仍导入网络设备库（按带外/管理 IP 登记），
+                  后续版本将支持分流至服务器管理模块。
+                </div>
+              )}
 
               {/* SNMP 凭证关联（默认项） */}
               <div>

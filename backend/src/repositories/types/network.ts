@@ -182,6 +182,7 @@ export interface NetworkDiscoveryResult {
   interface_count: number | null;
   vendor: string | null;
   model: string | null;
+  device_type: string | null;
   response_time_ms: number | null;
   created_at: string;
 }

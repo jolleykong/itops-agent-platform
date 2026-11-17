@@ -60,6 +60,7 @@ export interface DiscoveryResult {
   interface_count?: number;
   vendor?: string;
   model?: string;
+  device_type?: string | null;
   response_time_ms?: number;
   created_at: string;
 }
