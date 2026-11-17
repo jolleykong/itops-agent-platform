@@ -338,6 +338,20 @@ export const serversRepo = {
       .get(hostname, port) as { id: string } | undefined;
   },
 
+  /**
+   * 按地址查服务器（hostname 或 ip_address 命中，导入去重用）。
+   * servers.ip_address 有部分唯一索引（WHERE ip_address IS NOT NULL），
+   * Zabbix 导入写 ip_address，必须在写库前预判冲突。
+   */
+  getByAddress(address: string): (ServerRecord & { zabbix_hostid?: string | null }) | undefined {
+    return db.prepare(`
+      SELECT * FROM servers
+      WHERE hostname = ? OR ip_address = ?
+      ORDER BY CASE WHEN hostname = ? THEN 0 ELSE 1 END
+      LIMIT 1
+    `).get(address, address, address) as (ServerRecord & { zabbix_hostid?: string | null }) | undefined;
+  },
+
   /** 按 hostname + name 检查重复（导入用） */
   existsByHostnameAndName(hostname: string, name: string): boolean {
     const row = db.prepare('SELECT id FROM servers WHERE hostname = ? AND name = ?').get(hostname, name);

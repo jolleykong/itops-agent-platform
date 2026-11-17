@@ -618,6 +618,9 @@ export default function ZabbixQuery() {
               </div>
             )}
             {importRows.length > 0 && (
+              <ImportReasonSummary rows={importRows} />
+            )}
+            {importRows.length > 0 && (
               <table className="w-full text-sm">
                 <thead>
                   <tr className="text-left text-xs text-text-secondary border-b border-border">
@@ -666,7 +669,9 @@ export default function ZabbixQuery() {
                       <td className="py-2 pr-2 text-xs">{r.os || '—'}</td>
                       <td className="py-2 pr-2 text-xs">
                         {r.status === 'duplicate' ? (
-                          <span className="text-text-tertiary">已存在，跳过</span>
+                          <span className="text-text-tertiary" title={r.error}>
+                            已存在，跳过{r.error ? `：${r.error}` : ''}
+                          </span>
                         ) : r.status === 'backfill' ? (
                           <span className="text-amber-500">已存在，将回填为 Zabbix 通道</span>
                         ) : r.status === 'failed' ? (
@@ -693,6 +698,58 @@ export default function ZabbixQuery() {
           </div>
         )}
       </section>
+    </div>
+  );
+}
+
+/** 归一化错误原因：同类的地址冲突只保留一条代表描述 */
+function normalizeReason(err: string): string {
+  if (/已被其他 Zabbix 主机占用/.test(err)) return '同批次内多台主机共用同一地址';
+  if (/已被服务器/.test(err)) return '地址已被平台已有服务器占用';
+  if (/同地址 SSH 服务器/.test(err)) return '平台已有同地址 SSH 服务器';
+  if (/hostid 已导入/.test(err)) return '该主机此前已导入';
+  if (/UNIQUE constraint/.test(err)) return '唯一约束冲突（IP/hostname 重复）';
+  return err.length > 80 ? `${err.slice(0, 80)}…` : err;
+}
+
+/** 导入预览/结果的状态与原因分布摘要 */
+function ImportReasonSummary({ rows }: { rows: ZabbixImportRow[] }) {
+  const counts = { preview: 0, backfill: 0, duplicate: 0, failed: 0, success: 0 };
+  const reasonMap = new Map<string, { count: number; sample: string }>();
+  for (const r of rows) {
+    if (r.status in counts) counts[r.status as keyof typeof counts]++;
+    if ((r.status === 'failed' || r.status === 'duplicate' || r.status === 'backfill') && r.error) {
+      const key = normalizeReason(r.error);
+      const cur = reasonMap.get(key) ?? { count: 0, sample: r.error };
+      cur.count++;
+      reasonMap.set(key, cur);
+    }
+  }
+  const reasons = [...reasonMap.entries()].sort((a, b) => b[1].count - a[1].count);
+  const skippable = counts.duplicate + counts.backfill;
+  return (
+    <div className="text-xs space-y-1 bg-background border border-border rounded-lg p-3">
+      <div className="flex flex-wrap gap-x-4 gap-y-1">
+        <span className="text-emerald-500">可导入 {counts.preview}</span>
+        {counts.success > 0 && <span className="text-emerald-500">导入成功 {counts.success}</span>}
+        {counts.backfill > 0 && <span className="text-amber-500">回填 {counts.backfill}</span>}
+        {counts.duplicate > 0 && <span className="text-text-secondary">跳过 {counts.duplicate}</span>}
+        {counts.failed > 0 && <span className="text-status-failed">失败 {counts.failed}</span>}
+        <span className="text-text-tertiary">共 {rows.length} 台</span>
+      </div>
+      {reasons.length > 0 && (
+        <div className="pt-1 border-t border-border/50 space-y-0.5">
+          <span className="text-text-secondary">原因分布：</span>
+          {reasons.map(([reason, { count, sample }]) => (
+            <div key={reason} className="text-text-tertiary" title={sample}>
+              · {reason}（{count} 台）{sample !== reason ? <span className="text-text-tertiary/70">，示例：{sample.slice(0, 60)}</span> : null}
+            </div>
+          ))}
+        </div>
+      )}
+      {skippable + counts.failed === 0 && counts.preview > 0 && (
+        <div className="text-text-tertiary">无冲突，可全选导入</div>
+      )}
     </div>
   );
 }

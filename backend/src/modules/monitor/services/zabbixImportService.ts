@@ -114,6 +114,9 @@ class ZabbixImportService {
       details: [],
     };
 
+    // 同批次地址占用表：address → 先导入的 hostid（ip_address 唯一约束预判）
+    const batchAddresses = new Map<string, string>();
+
     for (const host of fetched.data) {
       const groupNameList = (host.hostgroups ?? host.groups ?? [])
         .map((g) => g.name)
@@ -158,6 +161,30 @@ class ZabbixImportService {
           continue;
         }
 
+        // 3) 地址冲突预判：servers.ip_address 有唯一索引，多台 Zabbix 主机共享同一
+        //    主接口 IP（虚机多 Agent、VIP、同 IP 多主机）时必须在这里拦下并给出原因，
+        //    否则写库阶段报 UNIQUE constraint failed，用户看不到可读原因。
+        const batchOwner = batchAddresses.get(address);
+        if (batchOwner) {
+          result.skipped++;
+          result.details.push({
+            ...base,
+            status: 'duplicate',
+            error: `地址 ${address} 在本次导入中已被其他 Zabbix 主机占用（hostid=${batchOwner}），一台设备只保留一条记录`,
+          });
+          continue;
+        }
+        const byAddress = serversRepo.getByAddress(address);
+        if (byAddress && byAddress.zabbix_hostid !== host.hostid) {
+          result.skipped++;
+          result.details.push({
+            ...base,
+            status: 'duplicate',
+            error: `地址 ${address} 已被服务器「${byAddress.name}」占用${byAddress.zabbix_hostid ? `（Zabbix hostid=${byAddress.zabbix_hostid}）` : ''}，如需替换请先删除旧记录`,
+          });
+          continue;
+        }
+
         if (opts.dryRun) {
           result.details.push(base);
           continue;
@@ -183,6 +210,7 @@ class ZabbixImportService {
         });
 
         result.imported++;
+        batchAddresses.set(address, host.hostid);
         result.details.push({ ...base, status: 'success' });
       } catch (err) {
         logger.error(`Zabbix 主机导入失败 [${host.host}]`, err);
