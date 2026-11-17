@@ -5,6 +5,7 @@ import { logger } from '../../../../utils/logger';
 import type { OSType } from '../../../scripts/services/commandDispatcher';
 import { getCommandTemplates } from '../../../scripts/services/commandDispatcher';
 import { executeCommand } from './sshCommandExecutor';
+import { zabbixComplianceService } from '../../../monitor/services/zabbixComplianceService';
 import type { CommandResult } from './sshTypes';
 
 // 根据操作系统类型获取合规检查列表
@@ -116,29 +117,25 @@ async function analyzeAllComplianceChecks(results: Record<string, CommandResult>
   }
 }
 
-export async function runComplianceCheck(
+/** 通道无关的检查执行器：返回检查项名 → 结果 */
+type ComplianceExecutor = () => Promise<Record<string, CommandResult>>;
+
+/**
+ * 合规检查统一流程：执行（由各通道提供）→ 批量 AI 分析 → 合规历史保存。
+ * SSH 通道执行器在 runComplianceCheck 内构造；Zabbix 通道执行器为 zabbixComplianceService.executeChecks。
+ */
+async function runComplianceCheckCommon(
   serverId: string,
-  options: {
-    saveResults?: boolean;
-    useAI?: boolean;
-    concurrency?: number;
-  } = {}
+  options: { saveResults?: boolean; useAI?: boolean },
+  executeFn: ComplianceExecutor,
+  channelLabel: string,
 ): Promise<Record<string, CommandResult>> {
   const totalStartTime = Date.now();
   const checkId = randomUUID();
   const results: Record<string, CommandResult> = {};
   const useAI = options.useAI !== false;
-  const concurrency = options.concurrency ?? 5;
 
-  logger.info(`🚀 [Compliance Check] 开始合规检查，服务器: ${serverId}，并发数: ${concurrency}，AI分析: ${useAI}`);
-
-  // 获取服务器的 os_type
-  const server = serversRepo.getById(serverId);
-  const osType = (server?.os_type || 'linux') as OSType;
-
-  // 获取对应操作系统的合规检查列表
-  const checks = getComplianceCheckList(osType);
-  logger.info(`📋 [Compliance Check] 检查项数量: ${checks.length}，操作系统: ${osType}`);
+  logger.info(`🚀 [Compliance Check] 开始合规检查（${channelLabel} 通道），服务器: ${serverId}，AI分析: ${useAI}`);
 
   if (options.saveResults) {
     serversRepo.insertComplianceCheck({
@@ -151,28 +148,14 @@ export async function runComplianceCheck(
     });
   }
 
-  // 第一步：并发执行所有 SSH 命令，不进行 AI 分析
+  // 第一步：执行所有检查项（通道各自实现），不进行 AI 分析
   const commandStartTime = Date.now();
-
-  const executeCheckOnly = async (check: typeof checks[0]): Promise<[string, CommandResult]> => {
-    const result = await executeCommand(serverId, check.command, {
-      logHistory: false,
-      executedBy: 'compliance-check'
-    });
-    return [check.name, result];
-  };
-
-  for (let i = 0; i < checks.length; i += concurrency) {
-    const batch = checks.slice(i, i + concurrency);
-    const batchResults = await Promise.all(batch.map(executeCheckOnly));
-    batchResults.forEach(([name, result]) => {
-      results[name] = result;
-    });
-    logger.info(`✅ [Compliance Check] 完成批次 ${Math.floor(i / concurrency) + 1}/${Math.ceil(checks.length / concurrency)}，已完成 ${Object.keys(results).length}/${checks.length}`);
+  const execResults = await executeFn();
+  for (const [name, result] of Object.entries(execResults)) {
+    results[name] = result;
   }
-
   const commandDuration = Date.now() - commandStartTime;
-  logger.info(`⚡ [Compliance Check] 所有命令执行完成，耗时: ${commandDuration}ms`);
+  logger.info(`⚡ [Compliance Check] 所有检查执行完成，耗时: ${commandDuration}ms，完成 ${Object.keys(results).length} 项`);
 
   // 第二步：批量 AI 分析（一次 LLM 调用）
   if (useAI) {
@@ -195,7 +178,56 @@ export async function runComplianceCheck(
   }
 
   const totalDuration = Date.now() - totalStartTime;
-  logger.info(`🏁 [Compliance Check] 全部完成，总耗时: ${totalDuration}ms，命令执行: ${commandDuration}ms，AI分析: ${useAI ? `${totalDuration - commandDuration}ms` : '跳过'}`);
+  logger.info(`🏁 [Compliance Check] 全部完成（${channelLabel}），总耗时: ${totalDuration}ms，检查执行: ${commandDuration}ms，AI分析: ${useAI ? `${totalDuration - commandDuration}ms` : '跳过'}`);
 
   return results;
+}
+
+export async function runComplianceCheck(
+  serverId: string,
+  options: {
+    saveResults?: boolean;
+    useAI?: boolean;
+    concurrency?: number;
+  } = {}
+): Promise<Record<string, CommandResult>> {
+  // 获取服务器与通道类型
+  const server = serversRepo.getById(serverId);
+
+  // 通道分流：Zabbix 通道（API / Agent 直连）为只读监控通道，无 SSH 凭据，
+  // 命令执行已被连接池守卫拒绝——合规检查改走监控项级采集
+  if (server && (server.conn_type === 'zabbix' || server.conn_type === 'zabbix_agent')) {
+    logger.info(`🛡️ [Compliance Check] ${server.name} 为 ${server.conn_type} 通道，走 Zabbix 监控项级检查`);
+    return runComplianceCheckCommon(serverId, options, () => zabbixComplianceService.executeChecks(serverId), 'zabbix');
+  }
+
+  const osType = (server?.os_type || 'linux') as OSType;
+
+  // 获取对应操作系统的合规检查列表
+  const checks = getComplianceCheckList(osType);
+  const concurrency = options.concurrency ?? 5;
+  logger.info(`📋 [Compliance Check] 检查项数量: ${checks.length}，操作系统: ${osType}，并发数: ${concurrency}`);
+
+  // SSH 通道执行器：分批并发执行命令
+  const executeSshChecks: ComplianceExecutor = async () => {
+    const results: Record<string, CommandResult> = {};
+    const executeCheckOnly = async (check: typeof checks[0]): Promise<[string, CommandResult]> => {
+      const result = await executeCommand(serverId, check.command, {
+        logHistory: false,
+        executedBy: 'compliance-check'
+      });
+      return [check.name, result];
+    };
+    for (let i = 0; i < checks.length; i += concurrency) {
+      const batch = checks.slice(i, i + concurrency);
+      const batchResults = await Promise.all(batch.map(executeCheckOnly));
+      batchResults.forEach(([name, result]) => {
+        results[name] = result;
+      });
+      logger.info(`✅ [Compliance Check] 完成批次 ${Math.floor(i / concurrency) + 1}/${Math.ceil(checks.length / concurrency)}，已完成 ${Object.keys(results).length}/${checks.length}`);
+    }
+    return results;
+  };
+
+  return runComplianceCheckCommon(serverId, options, executeSshChecks, 'ssh');
 }

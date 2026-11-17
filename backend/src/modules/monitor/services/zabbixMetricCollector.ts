@@ -150,6 +150,15 @@ class ZabbixMetricCollector {
     return (result.data as ZabbixItem[]).filter((it) => it.status !== '1' && it.state !== '1');
   }
 
+  /** 公共方法：按服务器 ID 获取认证上下文 + 全部监控项最新值（合规检查等模块复用） */
+  async getLatestItems(serverId: string): Promise<{ server: ZabbixServerRef; auth: string; hostid: string; items: ZabbixItem[] }> {
+    const server = serversRepo.getById(serverId) as unknown as ZabbixServerRef | undefined;
+    if (!server) throw new ZabbixChannelError('Server not found');
+    const { auth, hostid } = await this.getContext(server);
+    const items = await this.fetchItems(auth, hostid);
+    return { server, auth, hostid, items };
+  }
+
   /**
    * 采集实时指标并写入 server_metrics。
    * 返回结构与 SSH 通道 ServerMetricsResult.data 一致。

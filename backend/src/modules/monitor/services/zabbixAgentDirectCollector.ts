@@ -153,6 +153,16 @@ function resolveTarget(server: AgentDirectServerRef): { host: string; port: numb
 }
 
 class ZabbixAgentDirectCollector {
+  /** 公共方法：按服务器 ID 并发查询一组 Agent key（合规检查等模块复用）。全部 key 失败不抛错，由调用方按 values 判断 */
+  async queryItems(serverId: string, keys: string[]): Promise<{ host: string; port: number; values: Record<string, string> }> {
+    const server = serversRepo.getById(serverId) as unknown as AgentDirectServerRef | undefined;
+    if (!server) throw new ZabbixAgentDirectError('Server not found');
+    if (server.conn_type !== 'zabbix_agent') throw new ZabbixAgentDirectError('非 Zabbix Agent 直连通道服务器');
+    const { host, port } = resolveTarget(server);
+    const values = await queryKeys(host, port, keys);
+    return { host, port, values };
+  }
+
   /** 连接可用性检测：agent.ping → 期望 '1' */
   async checkAvailability(serverId: string): Promise<{ success: boolean; message: string }> {
     const server = serversRepo.getById(serverId) as unknown as (AgentDirectServerRef & { enabled?: number }) | undefined;
