@@ -118,12 +118,30 @@ export function useServerActionsMutations(
   });
 
   const executeCommandMutation = useMutation({
-    mutationFn: async ({ id, command }: { id: string; command: string }) => {
-      const res = await api.post(`/server-commands/${id}/exec`, { command });
+    mutationFn: async ({
+      id,
+      command,
+      ssh_key_id,
+      persist_ssh_key,
+    }: {
+      id: string;
+      command: string;
+      ssh_key_id?: string;
+      persist_ssh_key?: boolean;
+    }) => {
+      const res = await api.post(`/server-commands/${id}/exec`, {
+        command,
+        ssh_key_id,
+        persist_ssh_key,
+      });
       return res.data;
     },
-    onSuccess: () => {
+    onSuccess: (_data, vars) => {
       refetchCommandHistory();
+      // 勾选"保持密钥"后服务器记录已更新，刷新列表使凭据关联生效
+      if (vars?.persist_ssh_key) {
+        queryClient.invalidateQueries({ queryKey: ['servers'] });
+      }
     },
   });
 

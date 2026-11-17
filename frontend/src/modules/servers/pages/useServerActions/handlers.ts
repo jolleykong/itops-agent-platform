@@ -20,13 +20,13 @@ interface ServerActionsHandlers {
   handleSubmit: (e: React.FormEvent) => void;
   handleEdit: (server: Server) => void;
   handleTestConnection: (server: Server) => void;
-  handleExecuteCommand: () => void;
+  handleExecuteCommand: (payload?: { ssh_key_id?: string; persist_ssh_key?: boolean }) => void;
   handleRunCompliance: (server: Server) => void;
   startComplianceCheck: () => void;
   handleCollectInfo: (server: Server) => Promise<void>;
   handleAiGenerateCommand: () => Promise<void>;
   handleExecuteAiCommand: () => void;
-  confirmExecuteAiCommand: () => void;
+  confirmExecuteAiCommand: (payload?: { ssh_key_id?: string; persist_ssh_key?: boolean }) => void;
   handleCollectAll: () => Promise<void>;
   handleCollectMetrics: (server: Server) => Promise<void>;
   handleCollectAllMetrics: () => Promise<void>;
@@ -195,11 +195,11 @@ export function useServerActionsHandlers(
     });
   };
 
-  const handleExecuteCommand = () => {
+  const handleExecuteCommand = (payload?: { ssh_key_id?: string; persist_ssh_key?: boolean }) => {
     if (!selectedServer || !command) return;
     setIsExecuting(true);
     executeCommandMutation.mutate(
-      { id: selectedServer.id, command },
+      { id: selectedServer.id, command, ...payload },
       {
         onSuccess: (data: any) => {
           setCommandResult(data.data);
@@ -315,7 +315,7 @@ ${serverInfo.disk_gb ? `磁盘大小：${serverInfo.disk_gb}GB` : ''}
     setShowAiCommandConfirm(true);
   };
 
-  const confirmExecuteAiCommand = () => {
+  const confirmExecuteAiCommand = (payload?: { ssh_key_id?: string; persist_ssh_key?: boolean }) => {
     setShowAiCommandConfirm(false);
     setIsAiCommandModalOpen(false);
     setAiGeneratedCommand('');
@@ -328,7 +328,7 @@ ${serverInfo.disk_gb ? `磁盘大小：${serverInfo.disk_gb}GB` : ''}
 
     setIsExecuting(true);
     executeCommandMutation.mutate(
-      { id: aiCommandServer!.id, command: aiGeneratedCommand },
+      { id: aiCommandServer!.id, command: aiGeneratedCommand, ...payload },
       {
         onSuccess: (data: any) => {
           setCommandResult(data.data);

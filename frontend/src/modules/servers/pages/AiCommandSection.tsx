@@ -2,7 +2,9 @@ import {
   Bot, Server, AlertCircle, Sparkles, RefreshCw, Terminal, X,
 } from 'lucide-react';
 import clsx from 'clsx';
+import { useEffect, useState } from 'react';
 import type { Server as ServerType } from './types';
+import { SshKeyPicker } from './SshKeyPicker';
 
 interface AiCommandSectionProps {
   isOpen: boolean;
@@ -19,7 +21,7 @@ interface AiCommandSectionProps {
   onClose: () => void;
   onGenerate: () => void;
   onExecute: () => void;
-  onConfirmExecute: () => void;
+  onConfirmExecute: (payload?: { ssh_key_id?: string; persist_ssh_key?: boolean }) => void;
   onCancelConfirm: () => void;
 }
 
@@ -41,6 +43,16 @@ export function AiCommandSection({
   onConfirmExecute,
   onCancelConfirm,
 }: AiCommandSectionProps) {
+  // Zabbix 通道按需 SSH 的凭据选择（仅在确认弹窗中展示，切换服务器时重置）
+  const isZabbixChannel =
+    !!aiCommandServer && (aiCommandServer.conn_type === 'zabbix' || aiCommandServer.conn_type === 'zabbix_agent');
+  const [sshKeyId, setSshKeyId] = useState('');
+  const [persistKey, setPersistKey] = useState(false);
+  useEffect(() => {
+    setSshKeyId(aiCommandServer?.ssh_key_id || '');
+    setPersistKey(false);
+  }, [aiCommandServer?.id, aiCommandServer?.ssh_key_id, isOpen]);
+
   if (!isOpen || !aiCommandServer) return null;
 
   return (
@@ -274,6 +286,20 @@ export function AiCommandSection({
                   </p>
                 </div>
               )}
+              {isZabbixChannel && (
+                <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+                  <p className="text-sm text-amber-300 font-medium mb-2">
+                    ⚠️ 该服务器为 Zabbix 监控通道，需指定 SSH 凭据执行本次命令
+                  </p>
+                  <SshKeyPicker
+                    value={sshKeyId}
+                    onChange={setSshKeyId}
+                    persist={persistKey}
+                    onPersistChange={setPersistKey}
+                    persistedKeyId={aiCommandServer.ssh_key_id}
+                  />
+                </div>
+              )}
               <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg">
                 <p className="text-sm text-red-300 font-medium">
                   ⚠️ 此操作将在目标服务器上执行命令，请确认命令的安全性！
@@ -288,8 +314,16 @@ export function AiCommandSection({
                 取消
               </button>
               <button
-                onClick={onConfirmExecute}
-                className="flex-1 px-4 py-2 bg-text-primary text-surface rounded-lg hover:opacity-90 transition-opacity flex items-center justify-center gap-2"
+                onClick={() =>
+                  onConfirmExecute(
+                    isZabbixChannel
+                      ? { ssh_key_id: sshKeyId || undefined, persist_ssh_key: persistKey }
+                      : undefined,
+                  )
+                }
+                disabled={isZabbixChannel && !sshKeyId}
+                title={isZabbixChannel && !sshKeyId ? '请先选择 SSH 凭据' : undefined}
+                className="flex-1 px-4 py-2 bg-text-primary text-surface rounded-lg hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
               >
                 <Terminal className="w-4 h-4" />
                 确认执行

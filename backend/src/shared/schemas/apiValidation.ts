@@ -317,6 +317,10 @@ export const serverCommandSchemas = {
   execCommand: z.object({
     command: z.string().min(1, '命令不能为空').max(10000),
     timeout: z.coerce.number().int().min(1000).max(300000).optional(),
+    // Zabbix 通道服务器按需 SSH：一次性指定的 SSH 凭据 ID
+    ssh_key_id: z.string().uuid('无效的SSH凭据ID').optional().nullable(),
+    // 勾选"保持密钥"→ 将凭据与服务器持久化关联（写入 servers.ssh_key_id）
+    persist_ssh_key: z.boolean().optional(),
   }),
 };
 

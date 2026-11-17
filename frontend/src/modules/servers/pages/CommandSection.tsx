@@ -1,6 +1,8 @@
+import { useEffect, useState } from 'react';
 import { Terminal, Trash2 } from 'lucide-react';
 import clsx from 'clsx';
 import type { CommandResult, Server } from './types';
+import { SshKeyPicker } from './SshKeyPicker';
 
 interface CommandSectionProps {
   selectedServer: Server | null;
@@ -9,7 +11,7 @@ interface CommandSectionProps {
   commandResult: CommandResult | null;
   onClearResult: () => void;
   isExecuting: boolean;
-  onExecute: () => void;
+  onExecute: (payload?: { ssh_key_id?: string; persist_ssh_key?: boolean }) => void;
 }
 
 export function CommandSection({
@@ -21,23 +23,42 @@ export function CommandSection({
   isExecuting,
   onExecute,
 }: CommandSectionProps) {
-  if (!selectedServer) return null;
+  // 按需 SSH 的凭据选择状态（切换服务器时重置/预选已持久化凭据）
+  const isZabbixChannel =
+    !!selectedServer && (selectedServer.conn_type === 'zabbix' || selectedServer.conn_type === 'zabbix_agent');
+  const [sshKeyId, setSshKeyId] = useState(selectedServer?.ssh_key_id || '');
+  const [persistKey, setPersistKey] = useState(false);
+  useEffect(() => {
+    setSshKeyId(selectedServer?.ssh_key_id || '');
+    setPersistKey(false);
+  }, [selectedServer?.id, selectedServer?.ssh_key_id]);
 
-  const isSshChannel = !selectedServer.conn_type || selectedServer.conn_type === 'ssh';
+  if (!selectedServer) return null;
 
   return (
     <>
-      {/* Zabbix 通道不支持 SSH 命令执行的提前提示（后端连接池守卫会拒绝，避免用户执行后才报错） */}
-      {!isSshChannel && (
-        <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-4 flex items-start gap-3">
-          <span className="text-amber-400 text-lg leading-none mt-0.5">⚠️</span>
-          <div className="text-sm">
-            <p className="text-amber-300 font-medium">
-              该服务器为 {selectedServer.conn_type === 'zabbix' ? 'Zabbix API' : 'Zabbix Agent 直连'}监控通道，不支持 SSH 命令执行
-            </p>
-            <p className="text-text-secondary mt-1 text-xs">
-              Zabbix 通道为只读监控（指标采集/合规检查均走监控项），命令执行需要为该设备配置 SSH 通道（连接类型选"SSH"并填写凭据）后使用。
-            </p>
+      {/* Zabbix 通道按需 SSH：说明 + 凭据选择 */}
+      {isZabbixChannel && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-4 space-y-3">
+          <div className="flex items-start gap-3">
+            <span className="text-amber-400 text-lg leading-none mt-0.5">⚠️</span>
+            <div className="text-sm">
+              <p className="text-amber-300 font-medium">
+                该服务器为 {selectedServer.conn_type === 'zabbix' ? 'Zabbix API' : 'Zabbix Agent 直连'}监控通道
+              </p>
+              <p className="text-text-secondary mt-1 text-xs">
+                常规监控为只读。如需执行命令，请在下方选择已配置的 SSH 凭据，本次执行将通过该凭据临时 SSH 到目标机。
+              </p>
+            </div>
+          </div>
+          <div className="pl-8">
+            <SshKeyPicker
+              value={sshKeyId}
+              onChange={setSshKeyId}
+              persist={persistKey}
+              onPersistChange={setPersistKey}
+              persistedKeyId={selectedServer.ssh_key_id}
+            />
           </div>
         </div>
       )}
@@ -110,8 +131,15 @@ export function CommandSection({
                 disabled={isExecuting}
               />
               <button
-                onClick={onExecute}
-                disabled={!command || isExecuting}
+                onClick={() =>
+                  onExecute(
+                    isZabbixChannel
+                      ? { ssh_key_id: sshKeyId || undefined, persist_ssh_key: persistKey }
+                      : undefined,
+                  )
+                }
+                disabled={!command || isExecuting || (isZabbixChannel && !sshKeyId)}
+                title={isZabbixChannel && !sshKeyId ? '请先选择 SSH 凭据' : undefined}
                 className="px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
               >
                 {isExecuting ? (

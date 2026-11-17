@@ -99,10 +99,30 @@ export class SSHConnectionPool {
     return `${serverId}:${hostname}:${port}:${username}`;
   }
 
-  async acquire(serverId: string, options: { timeout?: number } = {}): Promise<Client> {
+  async acquire(serverId: string, options: { timeout?: number; sshKeyId?: string } = {}): Promise<Client> {
     const server = serversRepo.getById(serverId) as ServerInfo | undefined;
     if (!server) {
       throw new Error('Server not found');
+    }
+
+    // 按需 SSH（手动指定凭据）：显式传入 sshKeyId 时，即使是 Zabbix 通道服务器也允许临时 SSH。
+    // 该连接不进连接池（避免与常规通道连接的凭据混淆），由调用方在 finally 中直接关闭。
+    if (options.sshKeyId) {
+      const cred = sshKeysRepo.getById(options.sshKeyId) as
+        | { auth_type: string; username?: string; password?: string; private_key?: string }
+        | undefined;
+      if (!cred) {
+        throw new Error(`指定的 SSH 凭据不存在: ${options.sshKeyId}`);
+      }
+      const serverOverride = { ...server, ssh_key_id: options.sshKeyId, use_ssh_key: 1 } as ServerInfo;
+      // 凭据自带用户名时优先使用（Zabbix 导入的主机通常没有 SSH 用户名）
+      if (cred.username) {
+        serverOverride.username = cred.username;
+      }
+      logger.info(
+        `🔑 Transient SSH (manual credential) for server ${serverId} (${server.hostname}:${server.port || 22}) via credential ${options.sshKeyId}`,
+      );
+      return this.createConnection(serverOverride, serverId);
     }
 
     // v062/v064: Zabbix 通道服务器（API / 直连）只读监控，一律拒绝 SSH 命令执行

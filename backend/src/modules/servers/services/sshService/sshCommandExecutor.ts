@@ -15,6 +15,8 @@ export async function executeCommand(
     timeout?: number;
     logHistory?: boolean;
     executedBy?: string;
+    /** 按需 SSH：一次性指定的凭据 ID（Zabbix 通道服务器临时 SSH 用），连接不进池、用后即关 */
+    sshKeyId?: string;
   } = {}
 ): Promise<CommandResult> {
   const startTime = Date.now();
@@ -39,7 +41,7 @@ export async function executeCommand(
   }
 
   try {
-    conn = await sshPool.acquire(serverId);
+    conn = await sshPool.acquire(serverId, { sshKeyId: options.sshKeyId });
     connAcquired = true;
 
     const result = await new Promise<CommandResult>((resolve, reject) => {
@@ -143,7 +145,12 @@ export async function executeCommand(
     return result;
   } finally {
     if (connAcquired && conn) {
-      sshPool.release(conn);
+      if (options.sshKeyId) {
+        // 一次性凭据连接：不归还连接池，直接关闭
+        try { conn.end(); } catch { /* ignore */ }
+      } else {
+        sshPool.release(conn);
+      }
     }
   }
 }

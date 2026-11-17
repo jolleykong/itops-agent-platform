@@ -2,6 +2,7 @@
 import type { Request, Response } from 'express';
 import { Router } from 'express';
 import { executeCommand, testConnection, runComplianceCheck, complianceChecks } from '../services/sshService';
+import { serversRepo } from '../../../repositories/serverRepository';
 import { logger } from '../../../utils/logger';
 import { requireRole } from '../../../middleware/auth';
 import { validateBody, validateParams } from '../../../middleware/validation';
@@ -21,7 +22,7 @@ router.post('/:id/test', requireRole('admin', 'operator'), validateParams(common
 
 router.post('/:id/exec', requireRole('admin', 'operator'), validateParams(commonSchemas.idParam), validateBody(serverCommandSchemas.execCommand), async (req: Request & { user?: { id: string } }, res: Response) => {
   try {
-    const { command, timeout } = req.body;
+    const { command, timeout, ssh_key_id, persist_ssh_key } = req.body;
     const userId = req.user?.id || 'unknown';
 
     // 通过 auditService 记录命令审计（避免 routes 直访 auditLogRepository）
@@ -30,12 +31,19 @@ router.post('/:id/exec', requireRole('admin', 'operator'), validateParams(common
       action: 'command-execute',
       resource_type: 'server',
       resource_id: req.params.id,
-      details: { command, isSafe: true, warnings: [] } as any,
+      details: { command, isSafe: true, warnings: [], ssh_key_id: ssh_key_id || undefined, persist_ssh_key: !!persist_ssh_key } as any,
     });
+
+    // "保持密钥"：把本次指定的凭据持久化关联到服务器（下次默认选中）
+    if (persist_ssh_key && ssh_key_id) {
+      serversRepo.update(req.params.id, { ssh_key_id } as any);
+      logger.info(`🔑 SSH credential ${ssh_key_id} persisted to server ${req.params.id}`);
+    }
 
     const result = await executeCommand(req.params.id, command, {
       timeout,
       executedBy: userId,
+      sshKeyId: ssh_key_id || undefined,
     });
 
     res.json({
