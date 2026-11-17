@@ -36,10 +36,20 @@ export type { SnmpVersion, SnmpCredential, SnmpResult, InterfaceInfo, DeviceHeal
 class SnmpService {
 
   /**
-   * 获取设备 SNMP 凭证
+   * 获取设备 SNMP 凭证（优先级）
+   * 1. snmp_credentials.device_id = 设备ID（设备专属凭证，向后兼容）
+   * 2. network_devices.snmp_credential_id 引用的共享凭证（2026-11-17 新增，
+   *    多设备凭据相同共享一条配置，不再逐台复制）
+   * 3. 全局 default 凭证（调用方兜底 getDefaultCredential）
    */
   getCredential(deviceId: string): SnmpCredential | null {
-    const row = snmpCredentialsRepo.getByDeviceId(deviceId);
+    let row = snmpCredentialsRepo.getByDeviceId(deviceId);
+    if (!row) {
+      const device = networkDeviceRepository.getByIdWithVendor(deviceId) as { snmp_credential_id?: string | null } | undefined;
+      if (device?.snmp_credential_id) {
+        row = snmpCredentialsRepo.getById(device.snmp_credential_id);
+      }
+    }
     if (!row) return null;
 
     return {

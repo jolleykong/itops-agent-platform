@@ -547,7 +547,7 @@ export default function NetworkDiscovery() {
               {/* SNMP 凭证关联（默认项） */}
               <div>
                 <label className="block text-xs text-text-secondary mb-1.5">
-                  SNMP 凭证 <span className="text-emerald-400">（导入后自动关联，SNMP 轮询直接生效）</span>
+                  SNMP 凭证 <span className="text-emerald-400">（导入后自动关联引用，凭据相同的设备共享同一配置）</span>
                 </label>
                 <select
                   value={snmpCredChoice}

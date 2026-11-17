@@ -265,15 +265,16 @@ export function deleteJob(deps: JobManagerDeps, jobId: string): void {
 }
 
 /**
- * 为新导入的设备自动关联 SNMP 凭证
+ * 为新导入的设备关联 SNMP 凭证（共享引用模式）
  *
  * 策略：
- * 1. 前端强制指定凭证（forcedCredentialId）→ 直接复制
+ * 1. 前端强制指定凭证（forcedCredentialId）→ 直接引用
  * 2. v2c/v1：按结果里记录的 community（探测成功时的明文）与凭证库解密比对 + 版本一致
- * 3. v3：结果无 community，若凭证库中恰好只有一个 v3 凭证则关联
+ * 3. v3：结果无 community，若凭证库中恰好只有一个 v3 凭证则引用
  *
- * 复制凭证敏感字段（repo 层返回/接收的均为密文，无需二次加解密），
- * 关联方式 = 新建一条 device_id 指向新设备的凭证记录（snmpService.getCredential 走此关联）。
+ * 关联方式 = 更新 network_devices.snmp_credential_id 指向共享凭证（不复制记录，
+ * 凭据相同的设备共享同一条配置；snmpService.getCredential 走此引用，
+ * 删除凭证时 FK ON DELETE SET NULL 自动解绑并回落 default）。
  */
 function linkSnmpCredential(
   deviceId: string, result: DiscoveryResult, forcedCredentialId?: string
@@ -307,19 +308,7 @@ function linkSnmpCredential(
     }
     if (!source) return false;
 
-    snmpCredentialsRepo.create({
-      id: randomUUID(),
-      device_id: deviceId,
-      name: `${result.sys_name || result.ip_address}-snmp`,
-      community: source.community ?? null,
-      snmp_version: source.snmp_version,
-      snmp_port: source.snmp_port,
-      snmp_user: source.snmp_user ?? null,
-      snmp_auth_protocol: source.snmp_auth_protocol ?? null,
-      snmp_auth_key: source.snmp_auth_key ?? null,
-      snmp_priv_protocol: source.snmp_priv_protocol ?? null,
-      snmp_priv_key: source.snmp_priv_key ?? null,
-    });
+    networkDeviceRepository.update(deviceId, { snmp_credential_id: source.id });
     return true;
   } catch (err: unknown) {
     logger.warn(`Failed to link SNMP credential for device ${deviceId}: ${getErrorMessage(err)}`);
