@@ -203,7 +203,7 @@ class ZabbixMetricCollector {
       const vmCpuPerf = pick(items, /^vmware\.vm\.cpu\.usage\.perf\[/i);
       if (cpu_usage === 0 && vmCpuPerf) cpu_usage = Math.min(100, Math.max(0, toNum(vmCpuPerf)));
 
-      const vmMemTotal = pick(items, /^vmware\.vm\.memory\.size\[/i);
+      const vmMemTotal = findByKey(items, /^vmware\.vm\.memory\.size\[/i)[0];
       const vmMemUsed = pick(items, /^vmware\.vm\.memory\.size\.usage\.guest\[/i);
       if (memory_total_gb === 0 && vmMemTotal) {
         memory_total_gb = bytesToGb(toNum(vmMemTotal));
@@ -265,12 +265,14 @@ class ZabbixMetricCollector {
         avoid: (k) => diskPathWeight(k) >= 100,
       });
 
-      // VMware 回退：虚机无 Agent 项时从 vmware.vm.* 取核数/内存
-      const vmCpuNum = pick(items, /^vmware\.vm\.cpu\.num\[/i);
-      const vmMemTotal = pick(items, /^vmware\.vm\.memory\.size\[/i);
+      // VMware 回退：虚机无 Agent 项时从 vmware.vm.* 取核数/内存。
+      // memory.size / cpu.num 是容量型配置项（更新频率低），不做新鲜度过滤
+      const vmCpuNum = findByKey(items, /^vmware\.vm\.cpu\.num\[/i)[0];
+      const vmMemTotal = findByKey(items, /^vmware\.vm\.memory\.size\[/i)[0];
 
       const existing = serversRepo.getById(serverId);
-      const ipAddress = existing?.ip_address || existing?.hostname || '';
+      // 不用 hostname 兜底 IP 字段（VMware 虚机无接口 IP 时 hostname 是可见名）
+      const ipAddress = existing?.ip_address || null;
       const os = uname || existing?.os || 'Unknown';
 
       serversRepo.updateSystemInfo(serverId, {

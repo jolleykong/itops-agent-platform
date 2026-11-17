@@ -318,8 +318,8 @@ export const serversRepo = {
     cpu_cores: number;
     memory_gb: number;
     disk_gb: number;
-    ip_address: string;
-    private_ip: string;
+    ip_address: string | null;
+    private_ip: string | null;
     os_type: string;
   }): void {
     db.prepare(`
