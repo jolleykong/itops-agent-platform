@@ -87,8 +87,8 @@ export const serverCrudService = {
       tags: tagsJson,
       os_type: input.os_type || 'linux',
       ssh_key_id: input.ssh_key_id || null,
-      // v062 连接通道
-      conn_type: input.conn_type === 'zabbix' ? 'zabbix' : 'ssh',
+      // v062/v064 连接通道：ssh | zabbix（API）| zabbix_agent（直连）
+      conn_type: ['zabbix', 'zabbix_agent'].includes(input.conn_type ?? '') ? input.conn_type! : 'ssh',
       zabbix_hostid: input.zabbix_hostid || null,
     });
     return { success: true, data: { id } };

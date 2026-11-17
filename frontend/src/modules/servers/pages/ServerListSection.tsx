@@ -1,10 +1,13 @@
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   Server, Terminal, CheckCircle2, AlertCircle, ShieldCheck, Wifi, History, Clock, FolderTree,
   Upload, RefreshCw, Plus, Edit, Trash2, Cpu, HardDrive, MemoryStick, Monitor,
-  MonitorPlay, Sparkles, FolderPlus,
+  MonitorPlay, Sparkles, FolderPlus, Search, X,
 } from 'lucide-react';
 import clsx from 'clsx';
+import api from '../../../../lib/api';
 import type { Server as ServerType, ServerGroup } from './types';
 import { GroupTree } from './ServerGroupSection';
 
@@ -72,6 +75,99 @@ export function ServerListSection({
   onViewComplianceHistory,
 }: ServerListSectionProps) {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+
+  // ── 搜索 ──
+  const [searchQuery, setSearchQuery] = useState('');
+  const visibleServers = searchQuery.trim()
+    ? filteredServers.filter((s) => {
+        const q = searchQuery.trim().toLowerCase();
+        return (
+          s.name.toLowerCase().includes(q) ||
+          s.hostname.toLowerCase().includes(q) ||
+          (s.ip_address || '').toLowerCase().includes(q) ||
+          (s.os || '').toLowerCase().includes(q)
+        );
+      })
+    : filteredServers;
+
+  // ── 批量选择/删除 ──
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [isBatchDeleting, setIsBatchDeleting] = useState(false);
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+  const handleBatchDelete = async () => {
+    if (selectedIds.size === 0) return;
+    if (!window.confirm(`确定删除选中的 ${selectedIds.size} 台服务器？此操作不可恢复！`)) return;
+    setIsBatchDeleting(true);
+    let ok = 0, fail = 0;
+    const errs: string[] = [];
+    for (const id of selectedIds) {
+      try {
+        await api.delete(`/servers/${id}`);
+        ok++;
+      } catch (e: any) {
+        fail++;
+        errs.push(e?.response?.data?.message || e?.message || '未知错误');
+      }
+    }
+    setIsBatchDeleting(false);
+    setSelectedIds(new Set());
+    queryClient.invalidateQueries({ queryKey: ['servers'] });
+    window.alert(`批量删除完成：成功 ${ok} 台，失败 ${fail} 台${errs.length ? '\n' + errs.slice(0, 5).join('\n') : ''}`);
+  };
+
+  // ── 批量添加 ──
+  const [batchAddOpen, setBatchAddOpen] = useState(false);
+  const [batchAddText, setBatchAddText] = useState('');
+  const [batchAddType, setBatchAddType] = useState<'zabbix' | 'zabbix_agent' | 'ssh'>('zabbix');
+  const [batchAddRunning, setBatchAddRunning] = useState(false);
+  const [batchAddResult, setBatchAddResult] = useState<string | null>(null);
+  const IPV4_RE = /^(\d{1,3}\.){3}\d{1,3}$/;
+  const handleBatchAdd = async () => {
+    const lines = batchAddText.split('\n').map((l) => l.trim()).filter(Boolean);
+    if (lines.length === 0) return;
+    setBatchAddRunning(true);
+    setBatchAddResult(null);
+    let ok = 0, fail = 0;
+    const errs: string[] = [];
+    const port = batchAddType === 'ssh' ? 22 : 10050;
+    for (const line of lines) {
+      // 每行格式：IP 或 IP,名称（逗号/空格分隔均可）
+      const parts = line.split(/[,|\s]+/).filter(Boolean);
+      const ip = parts[0];
+      const name = parts[1] || ip;
+      if (!IPV4_RE.test(ip)) {
+        fail++;
+        errs.push(`${line}: "${ip}" 不是合法 IPv4 地址`);
+        continue;
+      }
+      try {
+        await api.post('/servers', {
+          name,
+          hostname: ip,
+          port,
+          username: '',
+          os_type: 'linux',
+          conn_type: batchAddType,
+          description: '批量添加',
+        });
+        ok++;
+      } catch (e: any) {
+        fail++;
+        errs.push(`${line}: ${e?.response?.data?.message || e?.message || '未知错误'}`);
+      }
+    }
+    setBatchAddRunning(false);
+    setBatchAddResult(`成功 ${ok} 台，失败 ${fail} 台${errs.length ? '\n' + errs.slice(0, 10).join('\n') : ''}`);
+    queryClient.invalidateQueries({ queryKey: ['servers'] });
+  };
 
   return (
     <>
@@ -113,12 +209,48 @@ export function ServerListSection({
           批量导入
         </button>
         <button
+          onClick={() => { setBatchAddOpen(true); setBatchAddResult(null); }}
+          className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm bg-surface border border-border text-text-secondary hover:text-text-primary transition-colors"
+        >
+          <Plus className="w-4 h-4" />
+          批量添加
+        </button>
+        <button
           onClick={onOpenGroupModal}
           className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm bg-surface border border-border text-text-secondary hover:text-text-primary transition-colors"
         >
           <FolderPlus className="w-4 h-4" />
           新建分组
         </button>
+        {selectedIds.size > 0 && (
+          <button
+            onClick={handleBatchDelete}
+            disabled={isBatchDeleting}
+            className="flex items-center gap-2 px-3 py-2 rounded-lg text-sm bg-red-500/10 border border-red-500/30 text-red-400 hover:bg-red-500/20 transition-colors disabled:opacity-50"
+          >
+            <Trash2 className="w-4 h-4" />
+            删除选中 ({selectedIds.size})
+          </button>
+        )}
+        {/* 搜索框 */}
+        <div className="relative ml-auto w-64">
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-text-tertiary" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="搜索名称 / IP / OS..."
+            className="w-full pl-8 pr-8 py-2 bg-surface border border-border rounded-lg text-sm text-text-primary placeholder-text-tertiary focus:outline-none focus:border-primary"
+          />
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery('')}
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 hover:bg-background rounded"
+            >
+              <X className="w-3.5 h-3.5 text-text-secondary" />
+            </button>
+          )}
+        </div>
       </div>
 
       <div className="flex gap-4">
@@ -189,11 +321,13 @@ export function ServerListSection({
                   <div className="h-3 bg-border rounded w-3/4" />
                 </div>
               ))
-            ) : filteredServers.length === 0 ? (
+            ) : visibleServers.length === 0 ? (
               <div className="col-span-full flex flex-col items-center justify-center py-12 text-text-secondary">
                 <Server className="w-12 h-12 mb-4 opacity-50" />
                 <p>
-                  {selectedTag
+                  {searchQuery
+                    ? `没有匹配 "${searchQuery}" 的服务器`
+                    : selectedTag
                     ? `没有带标签 "${selectedTag}" 的服务器`
                     : selectedGroupId
                       ? '该分组下暂无服务器'
@@ -201,7 +335,7 @@ export function ServerListSection({
                 </p>
               </div>
             ) : (
-              filteredServers.map((server) => (
+              visibleServers.map((server) => (
                 <div
                   key={server.id}
                   className={clsx(
@@ -227,6 +361,14 @@ export function ServerListSection({
 
                   <div className="flex items-start justify-between mb-3 min-w-0 pl-2">
                     <div className="flex items-center gap-2 min-w-0">
+                      {/* 批量选择复选框 */}
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.has(server.id)}
+                        onChange={() => toggleSelect(server.id)}
+                        className="rounded border-border flex-shrink-0 cursor-pointer"
+                        title="加入批量选择"
+                      />
                       <div
                         className={clsx(
                           'w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0',
@@ -254,9 +396,17 @@ export function ServerListSection({
                           {server.conn_type === 'zabbix' && (
                             <span
                               className="ml-1.5 inline-flex items-center px-1.5 py-0.5 bg-purple-500/10 text-purple-500 text-[10px] rounded align-middle"
-                              title="Zabbix Agent 通道：只读监控，不支持 SSH 命令执行"
+                              title="Zabbix API 通道：只读监控，不支持 SSH 命令执行"
                             >
                               ZBX
+                            </span>
+                          )}
+                          {server.conn_type === 'zabbix_agent' && (
+                            <span
+                              className="ml-1.5 inline-flex items-center px-1.5 py-0.5 bg-teal-500/10 text-teal-500 text-[10px] rounded align-middle"
+                              title="Zabbix Agent 直连通道：平台直接访问目标机 10050 端口（需目标机 Server= 白名单放行）"
+                            >
+                              ZBXA
                             </span>
                           )}
                         </h3>
@@ -438,6 +588,67 @@ export function ServerListSection({
           </div>
         </div>
       </div>
+
+      {/* 批量添加弹窗 */}
+      {batchAddOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setBatchAddOpen(false)}>
+          <div
+            className="bg-surface border border-border rounded-xl p-6 w-[520px] max-h-[80vh] overflow-auto"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-medium text-text-primary">批量添加服务器</h3>
+              <button onClick={() => setBatchAddOpen(false)} className="p-1 hover:bg-background rounded">
+                <X className="w-4 h-4 text-text-secondary" />
+              </button>
+            </div>
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-text-secondary mb-2">连接通道</label>
+              <select
+                value={batchAddType}
+                onChange={(e) => setBatchAddType(e.target.value as 'zabbix' | 'zabbix_agent' | 'ssh')}
+                className="w-full px-3 py-2 bg-background border border-border rounded-lg text-text-primary focus:outline-none focus:border-primary"
+              >
+                <option value="zabbix">Zabbix API（只读监控，默认）</option>
+                <option value="zabbix_agent">Zabbix Agent 直连（需目标机白名单放行）</option>
+                <option value="ssh">SSH（可执行命令）</option>
+              </select>
+            </div>
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-text-secondary mb-2">
+                主机列表（每行一台：IP 或 IP,名称）
+              </label>
+              <textarea
+                value={batchAddText}
+                onChange={(e) => setBatchAddText(e.target.value)}
+                placeholder={'192.168.1.10\n192.168.1.11,web-server\n192.168.1.12 db-server'}
+                rows={8}
+                className="w-full px-3 py-2 bg-background border border-border rounded-lg text-sm text-text-primary font-mono focus:outline-none focus:border-primary"
+              />
+            </div>
+            {batchAddResult && (
+              <pre className="mb-4 p-3 bg-background border border-border rounded-lg text-xs text-text-secondary whitespace-pre-wrap max-h-40 overflow-auto">
+                {batchAddResult}
+              </pre>
+            )}
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setBatchAddOpen(false)}
+                className="px-4 py-2 rounded-lg text-sm bg-background border border-border text-text-secondary hover:text-text-primary"
+              >
+                关闭
+              </button>
+              <button
+                onClick={handleBatchAdd}
+                disabled={batchAddRunning || !batchAddText.trim()}
+                className="px-4 py-2 rounded-lg text-sm bg-primary text-white hover:bg-primary/90 disabled:opacity-50"
+              >
+                {batchAddRunning ? '添加中...' : '开始添加'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

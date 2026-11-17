@@ -16,7 +16,7 @@ interface FormData {
   os_type: 'linux' | 'windows';
   vnc_port: number;
   vnc_password: string;
-  conn_type: 'ssh' | 'zabbix';
+  conn_type: 'ssh' | 'zabbix' | 'zabbix_agent';
   zabbix_hostid: string;
 }
 
@@ -136,32 +136,39 @@ export function ServerFormModal({
                 <option value="windows">Windows</option>
               </select>
             </div>
-            {/* 连接通道（v062）：zabbix 通道只读监控，不持有 SSH 凭据 */}
+            {/* 连接通道（v062/v064）：zabbix 系通道只读监控，不持有 SSH 凭据 */}
             <div>
               <label className="block text-sm font-medium text-text-secondary mb-2">连接通道</label>
               <select
                 value={formData.conn_type}
                 onChange={(e) => {
-                  const v = e.target.value as 'ssh' | 'zabbix';
+                  const v = e.target.value as 'ssh' | 'zabbix' | 'zabbix_agent';
                   onFormDataChange({
                     ...formData,
                     conn_type: v,
-                    port: v === 'zabbix' ? 10050 : 22,
-                    username: v === 'zabbix' ? '' : formData.username,
+                    port: v === 'ssh' ? 22 : 10050,
+                    username: v === 'ssh' ? formData.username : '',
                   });
                 }}
                 className="w-full px-4 py-2 bg-background border border-border rounded-lg focus:outline-none focus:border-primary text-text-primary"
               >
                 <option value="ssh">SSH（可执行命令）</option>
-                <option value="zabbix">Zabbix Agent（只读监控）</option>
+                <option value="zabbix">Zabbix API（只读监控，默认）</option>
+                <option value="zabbix_agent">Zabbix Agent 直连（绕过 API）</option>
               </select>
               {formData.conn_type === 'zabbix' && (
                 <p className="mt-1 text-xs text-text-tertiary">
                   监控数据经 Zabbix API 采集（需在 监控 → Zabbix 查询 中保存后端连接配置）；不支持终端/命令执行。
                 </p>
               )}
+              {formData.conn_type === 'zabbix_agent' && (
+                <p className="mt-1 text-xs text-text-tertiary">
+                  平台后端直接访问目标机 10050 端口的 Agent（被动检查）。要求：目标机 zabbix_agentd.conf 的
+                  Server= 白名单包含平台 IP 且防火墙放行 10050，否则 Agent 会静默拒绝。
+                </p>
+              )}
             </div>
-            {formData.conn_type === 'zabbix' ? (
+            {formData.conn_type === 'zabbix' && (
               <div>
                 <label className="block text-sm font-medium text-text-secondary mb-2">Zabbix HostID（可选）</label>
                 <input
@@ -172,19 +179,21 @@ export function ServerFormModal({
                   className="w-full px-4 py-2 bg-background border border-border rounded-lg focus:outline-none focus:border-primary text-text-primary"
                 />
               </div>
-            ) : (
+            )}
+            {formData.conn_type === 'zabbix_agent' && (
               <div>
-                <label className="block text-sm font-medium text-text-secondary mb-2">用户名 *</label>
+                <label className="block text-sm font-medium text-text-secondary mb-2">目标 IP（直连地址）*</label>
                 <input
                   type="text"
-                  value={formData.username}
-                  onChange={(e) => updateField('username', e.target.value)}
-                  placeholder="例如: root"
+                  value={formData.hostname}
+                  onChange={(e) => updateField('hostname', e.target.value.trim())}
+                  placeholder="填写目标机的管理 IP（Agent 监听地址）"
                   className="w-full px-4 py-2 bg-background border border-border rounded-lg focus:outline-none focus:border-primary text-text-primary"
                   required
                 />
               </div>
             )}
+            {formData.conn_type === 'ssh' && (
           </div>
 
           {formData.conn_type === 'ssh' && (

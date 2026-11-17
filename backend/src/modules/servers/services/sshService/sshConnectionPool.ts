@@ -105,12 +105,13 @@ export class SSHConnectionPool {
       throw new Error('Server not found');
     }
 
-    // v062: Zabbix Agent 通道服务器只读监控，一律拒绝 SSH 命令执行
+    // v062/v064: Zabbix 通道服务器（API / 直连）只读监控，一律拒绝 SSH 命令执行
     // （覆盖命令执行/终端复用/合规检查/AI SSH 工具/告警修复等所有经连接池的入口）
-    if ((server as unknown as { conn_type?: string }).conn_type === 'zabbix') {
+    const connType = (server as unknown as { conn_type?: string }).conn_type;
+    if (connType === 'zabbix' || connType === 'zabbix_agent') {
       throw new Error(
-        '该服务器为 Zabbix Agent 通道（conn_type=zabbix），不支持 SSH 命令执行。' +
-        '监控数据通过 Zabbix API 采集；如需命令执行请为该设备单独配置 SSH 通道。'
+        '该服务器为 Zabbix 监控通道（conn_type=' + connType + '），不支持 SSH 命令执行。' +
+        '监控数据通过 Zabbix 采集；如需命令执行请为该设备单独配置 SSH 通道。'
       );
     }
 

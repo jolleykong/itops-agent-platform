@@ -112,7 +112,7 @@ export function useServerActionsState(): ServerActionsState {
     os_type: 'linux' as 'linux' | 'windows',
     vnc_port: 5900,
     vnc_password: '',
-    conn_type: 'ssh' as 'ssh' | 'zabbix',
+    conn_type: 'ssh' as 'ssh' | 'zabbix' | 'zabbix_agent',
     zabbix_hostid: '',
   });
   const [command, setCommand] = useState('');
@@ -195,7 +195,7 @@ export function useServerActionsState(): ServerActionsState {
       os_type: 'linux' as 'linux' | 'windows',
       vnc_port: 5900,
       vnc_password: '',
-      conn_type: 'ssh' as 'ssh' | 'zabbix',
+      conn_type: 'ssh' as 'ssh' | 'zabbix' | 'zabbix_agent',
       zabbix_hostid: '',
     });
     setSelectedSshKeyId('');

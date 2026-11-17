@@ -7,6 +7,7 @@
  *   - checkAvailability：Zabbix Agent 接口 available 状态作为连接测试
  *
  * 数据来源：Zabbix item.get 最新值（lastvalue/lastclock/units），经 key_ 模式映射。
+ * Linux 磁盘兼容两套模板 key：vfs.fs.size[...]（旧）与 vfs.fs.dependent.size[...]（新模板依赖项）。
  * 仅调用只读 API（host.get / item.get），不触碰 EnableRemoteCommands/system.run。
  */
 
@@ -72,13 +73,28 @@ function pick(items: ZabbixItem[], pattern: RegExp, opts: { prefer?: (key: strin
   return pool[0];
 }
 
-/** 磁盘路径排序权重：'/' 最优，/dev /sys /run /proc tmpfs 排除 */
+/** 取第一个匹配项，不做新鲜度过滤（用于 system.cpu.num / system.uname 等低频更新的容量/静态配置项，
+ *  此类项更新间隔可达数小时~1天，按 STALE_SECONDS 过滤会误判为缺失） */
+function pickStatic(items: ZabbixItem[], pattern: RegExp): ZabbixItem | undefined {
+  return findByKey(items, pattern)[0];
+}
+
+/** 磁盘路径排序权重：'/' 最优，/dev /sys /run /proc tmpfs 排除。
+ *  兼容 vfs.fs.size[<path>,<param>] 与 vfs.fs.dependent.size[<path>,<param>]（Linux 新模板依赖项） */
 function diskPathWeight(key: string): number {
-  const m = key.match(/^vfs\.fs\.size\[([^,\]]*)/i);
+  const m = key.match(/^vfs\.fs\.(?:dependent\.)?size\[([^,\]]*)/i);
   const path = (m?.[1] ?? '').trim();
   if (path === '/') return 0;
   if (/^\/(dev|sys|proc|run)/i.test(path) || /tmpfs|overlay|squashfs/i.test(path)) return 100;
   return 10 + path.length / 1000;
+}
+
+/** 按磁盘参数（total/used/pused）精确取项：参数必须完整匹配，避免 used 误命中 pused；
+ *  根分区优先，覆盖 vfs.fs.size 与 vfs.fs.dependent.size 两套模板 key */
+function pickDisk(items: ZabbixItem[], mode: 'total' | 'used' | 'pused'): ZabbixItem | undefined {
+  const matched = findByKey(items, new RegExp(`^vfs\\.fs\\.(?:size|dependent\\.size)\\[(?:[^,\\]]*,)?${mode}\\]`, 'i'));
+  if (matched.length === 0) return undefined;
+  return matched.slice().sort((a, b) => diskPathWeight(a.key_ ?? '') - diskPathWeight(b.key_ ?? ''))[0];
 }
 
 /** 网卡选择：取吞吐最大的主网卡（单网卡场景即唯一值） */
@@ -153,9 +169,9 @@ class ZabbixMetricCollector {
       });
       let cpu_usage = isFresh(cpuItem) ? Math.min(100, Math.max(0, toNum(cpuItem))) : 0;
 
-      // ── 内存 ──
-      const memTotal = pick(items, /^vm\.memory\.size\[.*total/i);
-      const memUsed = pick(items, /^vm\.memory\.size\[.*used/i);
+      // ── 内存（total 为容量型配置项，不做新鲜度过滤）──
+      const memTotal = pickStatic(items, /^vm\.memory\.size\[.*total/i);
+      const memUsed = pick(items, /^vm\.memory\.size\[.*used/i) ?? pickStatic(items, /^vm\.memory\.size\[.*used/i);
       const memPavail = pick(items, /^vm\.memory\.size\[.*pavailable/i);
       let memory_total_gb = bytesToGb(toNum(memTotal));
       let memory_used_gb = bytesToGb(toNum(memUsed));
@@ -166,16 +182,10 @@ class ZabbixMetricCollector {
         if (memory_total_gb > 0) memory_used_gb = (memory_total_gb * pused) / 100;
       }
 
-      // ── 磁盘（根分区优先）──
-      const diskUsageItem = pick(items, /^vfs\.fs\.size\[.*pused/i, { prefer: () => false, avoid: () => false });
-      const diskTotalItem = pick(items, /^vfs\.fs\.size\[.*total/i, {
-        prefer: (k) => diskPathWeight(k) <= 1,
-        avoid: (k) => diskPathWeight(k) >= 100,
-      });
-      const diskUsedItem = pick(items, /^vfs\.fs\.size\[.*used/i, {
-        prefer: (k) => diskPathWeight(k) <= 1,
-        avoid: (k) => diskPathWeight(k) >= 100,
-      });
+      // ── 磁盘（根分区优先，兼容 vfs.fs.size 与 vfs.fs.dependent.size 两套 key）──
+      const diskUsageItem = pickDisk(items, 'pused');
+      const diskTotalItem = pickDisk(items, 'total');
+      const diskUsedItem = pickDisk(items, 'used');
       const diskTotalBytes = toNum(diskTotalItem);
       const diskUsedBytes = toNum(diskUsedItem);
       const disk_usage = diskUsageItem && isFresh(diskUsageItem)
@@ -254,16 +264,18 @@ class ZabbixMetricCollector {
       const { auth, hostid } = await this.getContext(server);
       const items = await this.fetchItems(auth, hostid);
 
-      const unameItem = pick(items, /^(system\.uname|system\.hostname)/i, { avoid: (k) => /sw\.os/i.test(k) });
+      // uname / sw.os 均为低频更新静态项，不做新鲜度过滤；优先级 uname > sw.os > hostname
+      const unameItem = pickStatic(items, /^system\.uname/i)
+        ?? pickStatic(items, /^system\.sw\.os/i)
+        ?? pickStatic(items, /^system\.hostname/i);
       const uname = unameItem?.lastvalue?.trim() ?? '';
       const osType = detectOSType(uname || 'linux');
 
-      const cpuNumItem = pick(items, /^system\.cpu\.num/i);
-      const memTotalItem = pick(items, /^vm\.memory\.size\[.*total/i);
-      const diskTotalItem = pick(items, /^vfs\.fs\.size\[.*total/i, {
-        prefer: (k) => diskPathWeight(k) <= 1,
-        avoid: (k) => diskPathWeight(k) >= 100,
-      });
+      // system.cpu.num 为容量型配置项（更新间隔可达 1 天），不做新鲜度过滤
+      const cpuNumItem = pickStatic(items, /^system\.cpu\.num/i);
+      const memTotalItem = pickStatic(items, /^vm\.memory\.size\[.*total/i);
+      const diskTotalItem = pickDisk(items, 'total');
+      const diskUsedItem = pickDisk(items, 'used');
 
       // VMware 回退：虚机无 Agent 项时从 vmware.vm.* 取核数/内存。
       // memory.size / cpu.num 是容量型配置项（更新频率低），不做新鲜度过滤
@@ -271,9 +283,12 @@ class ZabbixMetricCollector {
       const vmMemTotal = findByKey(items, /^vmware\.vm\.memory\.size\[/i)[0];
 
       const existing = serversRepo.getById(serverId);
-      // IP 字段清洗：与 hostname 相同（历史污染）或缺失 → 置空，不用可见名冒充 IP
+      // IP 字段：优先既有 ip_address；导入时 hostname 存的是接口 IP（可见名缺省场景），此时用 hostname 回填
+      const IPV4_RE = /^(\d{1,3}\.){3}\d{1,3}$/;
       const existingIp = existing?.ip_address ?? '';
-      const ipAddress = existingIp && existingIp !== existing?.hostname ? existingIp : null;
+      const ipAddress = existingIp && existingIp !== existing?.hostname
+        ? existingIp
+        : (IPV4_RE.test(existing?.hostname ?? '') ? existing!.hostname! : null);
       const os = uname || existing?.os || 'Unknown';
 
       serversRepo.updateSystemInfo(serverId, {

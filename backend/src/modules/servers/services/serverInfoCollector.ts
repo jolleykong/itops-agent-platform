@@ -6,6 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 import type { OSType } from '../../scripts/services/commandDispatcher';
 import { getCommandTemplates, detectOSType } from '../../scripts/services/commandDispatcher';
 import { zabbixMetricCollector } from '../../monitor/services/zabbixMetricCollector';
+import { zabbixAgentDirectCollector } from '../../monitor/services/zabbixAgentDirectCollector';
 
 interface ServerInfo {
   id: string;
@@ -67,8 +68,11 @@ class ServerInfoCollector {
     }
 
     // v062: Zabbix Agent 通道 → 走 Zabbix API 采集（item.get 最新值 + OS 探测）
-    if (server.conn_type === 'zabbix') {
-      const result = await zabbixMetricCollector.collectServerInfo(serverId);
+    // v064: zabbix_agent 直连通道 → 平台直接与目标机 Agent 被动检查协议通信
+    if (server.conn_type === 'zabbix' || server.conn_type === 'zabbix_agent') {
+      const result = server.conn_type === 'zabbix'
+        ? await zabbixMetricCollector.collectServerInfo(serverId)
+        : await zabbixAgentDirectCollector.collectServerInfo(serverId);
       if (!result.success) {
         return { success: false, error: result.error };
       }
@@ -227,8 +231,11 @@ class ServerInfoCollector {
     }
 
     // v062: Zabbix Agent 通道 → 走 Zabbix API 采集（指标已写入 server_metrics）
-    if (server.conn_type === 'zabbix') {
-      const result = await zabbixMetricCollector.collectServerMetrics(serverId);
+    // v064: zabbix_agent 直连通道 → 直接向目标机 Agent 发起被动检查
+    if (server.conn_type === 'zabbix' || server.conn_type === 'zabbix_agent') {
+      const result = server.conn_type === 'zabbix'
+        ? await zabbixMetricCollector.collectServerMetrics(serverId)
+        : await zabbixAgentDirectCollector.collectServerMetrics(serverId);
       if (!result.success) {
         return { success: false, error: result.error };
       }

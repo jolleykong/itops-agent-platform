@@ -26,8 +26,8 @@ export const serverSchemas = {
     os_type: z.enum(['linux', 'windows', 'unknown']).default('linux'),
     tags: z.array(z.string()).optional(),
     ssh_key_id: z.string().uuid().optional(),
-    // v062 连接通道：ssh（默认）| zabbix（Zabbix Agent 只读监控通道，无 SSH 凭据）
-    conn_type: z.enum(['ssh', 'zabbix']).default('ssh'),
+    // v062/v064 连接通道：ssh（默认）| zabbix（Zabbix API 只读监控）| zabbix_agent（直连 Agent 被动检查）
+    conn_type: z.enum(['ssh', 'zabbix', 'zabbix_agent']).default('ssh'),
     zabbix_hostid: z.string().max(100).optional(),
   }),
   updateServer: z.object({
@@ -42,7 +42,7 @@ export const serverSchemas = {
     os_type: z.enum(['linux', 'windows', 'unknown']).optional(),
     tags: z.array(z.string()).optional(),
     ssh_key_id: z.string().uuid().optional(),
-    conn_type: z.enum(['ssh', 'zabbix']).optional(),
+    conn_type: z.enum(['ssh', 'zabbix', 'zabbix_agent']).optional(),
     zabbix_hostid: z.string().max(100).nullable().optional(),
   }),
   serverId: z.object({
