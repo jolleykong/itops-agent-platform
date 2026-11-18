@@ -136,29 +136,41 @@ export class SelfMonitorService {
         alerts: alertCount,
         failedChecks,
       });
+    }
 
-      // ── 自监控告警写入告警中心 ──
-      try {
-        for (const [key, check] of Object.entries(report.checks)) {
-          if (check.status === 'fail') {
-            const existing = alertRepository.findActiveBySourceAndTitle('self_monitor', `自监控: ${key} 异常`);
+    // ── 自监控告警写入/刷新/恢复闭环（2026-11-18：恢复逻辑不再依赖非 healthy 分支，
+    //    否则所有检查恢复 pass 后旧的活跃告警永远无法自动解决） ──
+    try {
+      for (const [key, check] of Object.entries(report.checks)) {
+        const title = `自监控: ${key} 异常`;
+        if (check.status === 'fail') {
+          const existing = alertRepository.findActiveBySourceAndTitle('self_monitor', title);
 
-            if (!existing) {
-              alertRepository.createSimple({
-                id: randomUUID(),
-                title: `自监控: ${key} 异常`,
-                severity: 'high',
-                content: check.message,
-                source: 'self_monitor',
-                status: 'new',
-              });
-              logger.warn(`🔄 [SelfMonitor] Created alert for: ${key}`);
-            }
+          if (!existing) {
+            alertRepository.createSimple({
+              id: randomUUID(),
+              title,
+              severity: 'high',
+              content: check.message,
+              source: 'self_monitor',
+              status: 'new',
+            });
+            logger.warn(`🔄 [SelfMonitor] Created alert for: ${key}`);
+          } else {
+            // 持续异常：刷新告警内容（如错误率数值/摘要变化），保持最新信息
+            alertRepository.updateContent(existing.id, check.message);
+          }
+        } else if (check.status === 'pass') {
+          // 恢复闭环：检查已恢复且存在活跃告警 → 自动解决
+          const existing = alertRepository.findActiveBySourceAndTitle('self_monitor', title);
+          if (existing) {
+            alertRepository.resolve(existing.id);
+            logger.info(`✅ [SelfMonitor] Auto-resolved alert for: ${key}`);
           }
         }
-      } catch (e) {
-        logger.warn('Failed to create self-monitor alert:', e);
       }
+    } catch (e) {
+      logger.warn('Failed to create self-monitor alert:', e);
     }
 
     return report;

@@ -41,6 +41,21 @@ interface LogStats {
   last5Min: number;
   lastHour: number;
   lastDay: number;
+  /** 过去 1 小时 error 级日志条数（区别于 lastHour 的全级别日志量） */
+  errorsLastHour: number;
+}
+
+export interface ErrorSummaryItem {
+  message: string;
+  count: number;
+  lastTs: number;
+}
+
+export interface ErrorSummary {
+  /** 过去 1 小时 error 条数 */
+  count: number;
+  /** 按消息聚合的 top N 错误 */
+  top: ErrorSummaryItem[];
 }
 
 class Logger {
@@ -61,11 +76,17 @@ class Logger {
     warnings: 0,
     last5Min: 0,
     lastHour: 0,
-    lastDay: 0
+    lastDay: 0,
+    errorsLastHour: 0
   };
   private last5MinTimestamps: number[] = [];
   private lastHourTimestamps: number[] = [];
   private lastDayTimestamps: number[] = [];
+  /** 独立的 error 级时间戳（checkErrorRate 用，避免把 info/warn 计成"错误"） */
+  private errorTimestamps: number[] = [];
+  /** 最近 error 消息环形缓冲（用于错误摘要下钻） */
+  private recentErrors: Array<{ message: string; ts: number }> = [];
+  private maxRecentErrors = 500;
   private errorListeners: Array<(entry: LogEntry) => void> = [];
   private logBuffer: string[] = [];
   private isFlushing = false;
@@ -104,6 +125,8 @@ class Logger {
       this.last5MinTimestamps = this.last5MinTimestamps.filter(t => t > fiveMinAgo);
       this.lastHourTimestamps = this.lastHourTimestamps.filter(t => t > oneHourAgo);
       this.lastDayTimestamps = this.lastDayTimestamps.filter(t => t > oneDayAgo);
+      this.errorTimestamps = this.errorTimestamps.filter(t => t > oneHourAgo);
+      this.recentErrors = this.recentErrors.filter(e => e.ts > oneHourAgo);
     }, 60 * 1000).unref();
   }
 
@@ -206,12 +229,43 @@ class Logger {
     this.last5MinTimestamps = this.last5MinTimestamps.filter(t => t > fiveMinAgo);
     this.lastHourTimestamps = this.lastHourTimestamps.filter(t => t > oneHourAgo);
     this.lastDayTimestamps = this.lastDayTimestamps.filter(t => t > oneDayAgo);
+    this.errorTimestamps = this.errorTimestamps.filter(t => t > oneHourAgo);
 
     this.stats.last5Min = this.last5MinTimestamps.length;
     this.stats.lastHour = this.lastHourTimestamps.length;
     this.stats.lastDay = this.lastDayTimestamps.length;
+    this.stats.errorsLastHour = this.errorTimestamps.length;
 
     return { ...this.stats };
+  }
+
+  /**
+   * 过去 1 小时错误摘要：条数 + 按消息聚合的 top N（供自监控告警内容下钻）
+   */
+  getErrorSummary(topN = 5): ErrorSummary {
+    const oneHourAgo = Date.now() - 3600000;
+    this.errorTimestamps = this.errorTimestamps.filter(t => t > oneHourAgo);
+    this.recentErrors = this.recentErrors.filter(e => e.ts > oneHourAgo);
+
+    const grouped = new Map<string, ErrorSummaryItem>();
+    for (const e of this.recentErrors) {
+      // 归一化：去掉 uuid/IP/数字，让同类错误聚合到一起
+      const key = e.message
+        .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '<uuid>')
+        .replace(/\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/g, '<ip>')
+        .replace(/\d{2,}/g, '<n>')
+        .slice(0, 120);
+      const item = grouped.get(key);
+      if (item) {
+        item.count++;
+        item.lastTs = Math.max(item.lastTs, e.ts);
+      } else {
+        grouped.set(key, { message: key, count: 1, lastTs: e.ts });
+      }
+    }
+
+    const top = [...grouped.values()].sort((a, b) => b.count - a.count).slice(0, topN);
+    return { count: this.errorTimestamps.length, top };
   }
 
   onError(listener: (entry: LogEntry) => void): void {
@@ -322,9 +376,15 @@ class Logger {
     this.last5MinTimestamps.push(Date.now());
     this.lastHourTimestamps.push(Date.now());
     this.lastDayTimestamps.push(Date.now());
-    
+
     if (level === 'error') {
+      const now = Date.now();
       this.stats.errors++;
+      this.errorTimestamps.push(now);
+      this.recentErrors.push({ message, ts: now });
+      if (this.recentErrors.length > this.maxRecentErrors) {
+        this.recentErrors = this.recentErrors.slice(-this.maxRecentErrors);
+      }
       this.errorListeners.forEach(listener => listener(entry));
     }
     if (level === 'warn') {

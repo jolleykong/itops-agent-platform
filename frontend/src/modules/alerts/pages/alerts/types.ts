@@ -16,6 +16,10 @@ export interface ProcessResult {
   mappingTasks?: Array<{ taskId: string; mappingId: string; workflowId: string; workflowName: string }>;
   executionIds: string[];
   error: string | null;
+  /** 处理策略名（后端 /process 实际返回 alertId/strategy/executionId/error） */
+  strategy?: string;
+  /** 后端 message（如 "处理完成：使用 unified 策略"） */
+  message?: string;
 }
 
 export interface AutomationLog {

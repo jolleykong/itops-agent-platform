@@ -183,34 +183,40 @@ export function checkMemory(config: MonitorConfig): MonitorCheck {
   }
 }
 
-/** 最近 5 分钟错误率 */
+/** 过去 1 小时 error 级日志条数（2026-11-18 修复：原实现读 logger.getStats().lastHour，
+ *  该值统计的是全部级别日志量，info 日志即被计成"错误"，导致检查恒 fail、告警反复出现。
+ *  现改用独立的 errorsLastHour + getErrorSummary，文案同步修正，并携带 top 错误摘要便于下钻。 */
 export function checkErrorRate(config: MonitorConfig): MonitorCheck {
   try {
     const stats = logger.getStats();
-    const errorsLast5Min = stats.lastHour; // 近似
+    const errorsLastHour = stats.errorsLastHour;
 
-    if (errorsLast5Min > config.errorRateCrit) {
+    if (errorsLastHour > config.errorRateCrit) {
+      const summary = logger.getErrorSummary(3);
+      const topMsg = summary.top.length > 0
+        ? '；高频错误: ' + summary.top.map((t) => `「${t.message}」×${t.count}`).join(' / ')
+        : '';
       return {
         status: 'fail',
-        message: `错误率过高: 最近 5 分钟 ${errorsLast5Min} 个错误（阈值: ${config.errorRateCrit}）`,
-        value: errorsLast5Min,
+        message: `错误率过高: 最近 1 小时 ${errorsLastHour} 个错误（阈值: ${config.errorRateCrit}）${topMsg}`,
+        value: errorsLastHour,
         threshold: config.errorRateCrit,
       };
     }
 
-    if (errorsLast5Min > config.errorRateWarn) {
+    if (errorsLastHour > config.errorRateWarn) {
       return {
         status: 'warn',
-        message: `错误率偏高: 最近 5 分钟 ${errorsLast5Min} 个错误`,
-        value: errorsLast5Min,
+        message: `错误率偏高: 最近 1 小时 ${errorsLastHour} 个错误`,
+        value: errorsLastHour,
         threshold: config.errorRateWarn,
       };
     }
 
     return {
       status: 'pass',
-      message: `错误率正常: 最近 5 分钟 ${errorsLast5Min} 个错误记录`,
-      value: errorsLast5Min,
+      message: `错误率正常: 最近 1 小时 ${errorsLastHour} 个错误记录`,
+      value: errorsLastHour,
       threshold: config.errorRateWarn,
     };
   } catch (error) {

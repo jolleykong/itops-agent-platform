@@ -59,8 +59,11 @@ export default function AlertDetailPanel({
                 ? '⚠️ 执行遇到错误: ' + processResult.error
                 : hasProcessRecords(processResult)
                   ? `触发 ${processResult.matchedPolicies.length} 条修复策略，${processResult.mappingTasks?.length || 0} 个告警映射任务，${processResult.executionIds.length} 条修复执行记录已创建`
-                  : 'ℹ️ 未匹配到任何修复策略（告警级别/关键词不满足已有策略条件）'}
+                  : `ℹ️ 未匹配到任何修复策略${processResult.strategy ? `（处理策略: ${processResult.strategy}）` : '（告警级别/关键词不满足已有策略条件）'}`}
             </p>
+            {processResult.message && (
+              <p className="text-xs mt-1 opacity-80">{processResult.message}</p>
+            )}
           </div>
 
           {/* 策略列表 */}

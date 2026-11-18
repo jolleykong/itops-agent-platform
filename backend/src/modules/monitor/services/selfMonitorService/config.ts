@@ -20,9 +20,9 @@ export interface MonitorConfig {
   dbLatencyWarnMs: number;
   /** 数据库延迟严重阈值（毫秒） */
   dbLatencyCritMs: number;
-  /** 5 分钟内错误数告警阈值 */
+  /** 过去 1 小时 error 级日志数告警阈值 */
   errorRateWarn: number;
-  /** 5 分钟内错误数严重阈值 */
+  /** 过去 1 小时 error 级日志数严重阈值 */
   errorRateCrit: number;
   /** 服务降级阈值 */
   degradedServiceThreshold: number;

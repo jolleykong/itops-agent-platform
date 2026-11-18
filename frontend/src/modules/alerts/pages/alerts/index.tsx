@@ -88,8 +88,18 @@ export default function Alerts() {
     },
     onSuccess: (data) => {
       // axios 拦截器已解包 → data 本身就是后端 data 字段
+      // 后端 /process 返回 { alertId, strategy, executionId, error }（与旧 UI 期望的
+      // matchedPolicies 结构不同），此处统一归一化，避免渲染 undefined.length 崩溃
       if (data) {
-        setProcessResult(data);
+        setProcessResult({
+          alertId: data.alertId ?? '',
+          strategy: data.strategy,
+          message: data.message,
+          matchedPolicies: Array.isArray(data.matchedPolicies) ? data.matchedPolicies : [],
+          mappingTasks: Array.isArray(data.mappingTasks) ? data.mappingTasks : [],
+          executionIds: data.executionId ? [data.executionId] : Array.isArray(data.executionIds) ? data.executionIds : [],
+          error: data.error ?? null,
+        });
       }
       refetch();
     },

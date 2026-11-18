@@ -148,6 +148,13 @@ export function updateStatus(id: string, status: 'new' | 'acknowledged' | 'resol
   return getById(id);
 }
 
+/**
+ * 刷新告警内容（持续异常时保持最新信息，2026-11-18 自监控用）
+ */
+export function updateContent(id: string, content: string): void {
+  db.prepare(`UPDATE alerts SET content = ?, updated_at = datetime('now','localtime') WHERE id = ?`).run(content, id);
+}
+
 /** 确认告警（acknowledged） */
 export function acknowledge(id: string): AlertRecord | undefined {
   return updateStatus(id, 'acknowledged');
