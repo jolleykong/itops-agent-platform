@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useSearchParams } from 'react-router-dom';
 import api from '../../../lib/api';
 import {
   CheckCircle,
@@ -41,7 +42,10 @@ export interface RemediationExecution {
 
 export default function RemediationExecutions() {
   const queryClient = useQueryClient();
-  const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [searchParams, setSearchParams] = useSearchParams();
+  // 深链支持：?status=waiting_approval 直达过滤；?execId=xxx 直开详情；?alertId=xxx 按告警过滤
+  const alertIdParam = searchParams.get('alertId') || '';
+  const [statusFilter, setStatusFilter] = useState<string>(() => searchParams.get('status') || 'all');
   const [page, setPage] = useState(1);
   const [selectedExecutionId, setSelectedExecutionId] = useState<string | null>(null);
   const [showDetailModal, setShowDetailModal] = useState(false);
@@ -49,16 +53,33 @@ export default function RemediationExecutions() {
   const limit = 20;
 
   const { data, isLoading } = useQuery({
-    queryKey: ['remediation-executions', statusFilter, page],
+    queryKey: ['remediation-executions', statusFilter, page, alertIdParam],
     queryFn: async () => {
       const params: Record<string, string> = { page: String(page), limit: String(limit) };
       if (statusFilter !== 'all') {
         params.status = statusFilter;
       }
+      if (alertIdParam) {
+        params.alert_id = alertIdParam;
+      }
       const { data } = await api.get('/remediation-executions', { params });
       return data;
     }
   });
+
+  // execId 深链：自动打开对应详情弹窗（打开后清掉参数，避免关闭后重复弹出）
+  useEffect(() => {
+    const execId = searchParams.get('execId');
+    if (execId) {
+      setSelectedExecutionId(execId);
+      setShowDetailModal(true);
+      setExpandedLogs({});
+      const next = new URLSearchParams(searchParams);
+      next.delete('execId');
+      setSearchParams(next, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
 
   const approveMutation = useMutation({
     mutationFn: async ({ id, action }: { id: string; action: 'approve' | 'reject' }) => {
@@ -200,6 +221,22 @@ export default function RemediationExecutions() {
               <option value="skipped">已跳过</option>
             </select>
           </div>
+          {alertIdParam && (
+            <div className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-500/10 border border-blue-500/30 rounded-lg text-xs text-blue-400">
+              <span>按告警过滤: {alertIdParam.slice(0, 8)}…</span>
+              <button
+                onClick={() => {
+                  const next = new URLSearchParams(searchParams);
+                  next.delete('alertId');
+                  setSearchParams(next, { replace: true });
+                }}
+                className="hover:text-blue-300"
+                title="移除告警过滤"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
         </div>
 
         {isLoading ? (

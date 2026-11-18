@@ -372,13 +372,29 @@ export default function BigScreenLeftColumn({
             </div>
             <div className="text-xs text-blue-300/80">成功率</div>
           </div>
-          <div className="bg-amber-500/10 rounded-xl p-2.5 border border-amber-500/25">
+          <div
+            className={`bg-amber-500/10 rounded-xl p-2.5 border border-amber-500/25 transition-colors ${
+              (remediationStats?.waiting_approval || 0) > 0
+                ? 'cursor-pointer hover:border-amber-400/60 hover:bg-amber-500/20'
+                : ''
+            }`}
+            onClick={() => onNavigate('/remediation-executions?status=waiting_approval')}
+            title={(remediationStats?.waiting_approval || 0) > 0 ? '点击查看待审批的修复执行' : undefined}
+          >
             <div className="text-xl font-bold text-amber-300">
               {remediationStats?.waiting_approval || 0}
             </div>
             <div className="text-xs text-amber-300/80">待审批</div>
           </div>
-          <div className="bg-red-500/10 rounded-xl p-2.5 border border-red-500/25">
+          <div
+            className={`bg-red-500/10 rounded-xl p-2.5 border border-red-500/25 transition-colors ${
+              (remediationStats?.today.failed || 0) > 0
+                ? 'cursor-pointer hover:border-red-400/60 hover:bg-red-500/20'
+                : ''
+            }`}
+            onClick={() => onNavigate('/remediation-executions?status=failed')}
+            title={(remediationStats?.today.failed || 0) > 0 ? '点击查看失败的修复执行' : undefined}
+          >
             <div className="text-xl font-bold text-red-300">
               {remediationStats?.today.failed || 0}
             </div>
@@ -389,7 +405,9 @@ export default function BigScreenLeftColumn({
           {remediationStats?.recent_executions?.slice(0, 4).map((exec) => (
             <div
               key={exec.id}
-              className="flex items-center justify-between p-1.5 bg-slate-700/30 rounded-lg border border-slate-700/40"
+              className="flex items-center justify-between p-1.5 bg-slate-700/30 rounded-lg border border-slate-700/40 cursor-pointer hover:bg-slate-700/60 hover:border-slate-600 transition-colors"
+              onClick={() => onNavigate(`/remediation-executions?execId=${exec.id}`)}
+              title="点击查看执行详情"
             >
               <div className="flex items-center gap-2 min-w-0 flex-1">
                 <div
