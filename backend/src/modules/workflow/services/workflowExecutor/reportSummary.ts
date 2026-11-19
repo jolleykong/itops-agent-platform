@@ -327,10 +327,10 @@ export function buildSummarySection(result: SummaryResult): string {
 
     if (severity === 'no_data') {
       // 未取得数据按「检查项 + 原因」聚合展示，避免同类条目刷屏
-      const aggregated = new Map<string, { item: string; reason: string; targets: string[] }>();
+      const aggregated = new Map<string, { item: string; reason: string; advice: string; targets: string[] }>();
       for (const f of group) {
         const key = `${f.item}::${f.detail}`;
-        if (!aggregated.has(key)) aggregated.set(key, { item: f.item, reason: f.detail, targets: [] });
+        if (!aggregated.has(key)) aggregated.set(key, { item: f.item, reason: f.detail, advice: f.advice, targets: [] });
         aggregated.get(key)!.targets.push(f.target);
       }
       for (const [, agg] of aggregated) {
