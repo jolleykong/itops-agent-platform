@@ -6,6 +6,7 @@ import { logger } from '../../../../../utils/logger';
 import { topologyService } from '../../../../network/services/topologyService';
 import { changeService } from '../../../../change-management/services/changeService';
 import EnhancedRAGService from '../../remediation/enhancedRAGService';
+import { getAlarmLogEvidence } from '../../../../monitor/services/logEvidenceService';
 import { RCA_PROMPT } from '../../../prompts/rcaPrompt';
 import type { RootCauseAnalysis, UpdateRCAInput } from './rcaTypes';
 
@@ -326,6 +327,23 @@ export async function collectContext(alert: {
     }
   }
 
+  // ES 日志证据：等价于"收到告警后上机查日志"的零信任替代（docs/es-log-evidence-design.md）。
+  // 按主机名+告警时间窗查 ES 聚合摘要；ES 未配置/超时/异常时静默降级，绝不阻塞 RCA 主流程。
+  try {
+    const serverForEvidence = context.serverStatus as { name?: string } | null;
+    const evidenceHost = serverForEvidence?.name;
+    if (evidenceHost) {
+      const occurredMs = new Date(alert.created_at).getTime();
+      context.esLogEvidence = await getAlarmLogEvidence({
+        hostName: evidenceHost,
+        alertTitle: alert.title,
+        occurredAtMs: Number.isFinite(occurredMs) ? occurredMs : Date.now(),
+      });
+    }
+  } catch (error) {
+    logger.warn(`⚠️ [RCA] ES 日志证据获取失败（已降级）: ${error instanceof Error ? error.message : 'Unknown'}`);
+  }
+
   try {
     const oneHourAgo = new Date(new Date(alert.created_at).getTime() - 3600000).toISOString();
     const rawAlerts = alertRepository.listRecentExcludingId(alert.id, oneHourAgo, 10);
@@ -371,7 +389,8 @@ export async function analyzeWithLLM(alert: {
     '{topology_info}': JSON.stringify(context.topology, null, 2).substring(0, 2000),
     '{change_records}': JSON.stringify(context.recentChanges, null, 2).substring(0, 2000),
     '{related_alerts}': JSON.stringify(context.relatedAlerts, null, 2).substring(0, 2000),
-    '{knowledge_matches}': JSON.stringify(context.knowledgeMatches, null, 2).substring(0, 2000)
+    '{knowledge_matches}': JSON.stringify(context.knowledgeMatches, null, 2).substring(0, 2000),
+    '{es_log_evidence}': JSON.stringify(context.esLogEvidence ?? null, null, 2).substring(0, 4000)
   };
 
   const prompt = safeInject(RCA_PROMPT, replacements);

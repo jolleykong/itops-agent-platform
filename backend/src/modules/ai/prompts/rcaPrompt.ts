@@ -24,6 +24,11 @@ export const RCA_PROMPT = `你是一个IT运维根因分析专家。请根据以
 ## 知识库匹配
 {knowledge_matches}
 
+## ES 日志证据
+告警时间窗内该主机的日志摘要（级别分布 / 错误模式命中数 / 代表样本，来源 ELK）。
+available=false 表示 ES 不可用或未配置，此时忽略本节，不要臆测日志内容。
+{es_log_evidence}
+
 请分析上述信息，找出故障的根本原因。输出必须是有效的JSON格式，结构如下：
 
 \`\`\`json
