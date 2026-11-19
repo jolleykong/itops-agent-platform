@@ -40,7 +40,9 @@ export async function executeAutoInspectionAgent(input: string, context?: AgentE
   }
   
   if (!serverIds || serverIds.length === 0) {
-    serverIds = [servers[0].id];
+    // 未指定范围（如定时任务）→ 巡检全部启用服务器；此前只取第一台，
+    // 导致"日常健康检查"每天只检查 created_at 最新的那台
+    serverIds = servers.map(s => s.id);
   }
   
   let totalSuccessChecks = 0;

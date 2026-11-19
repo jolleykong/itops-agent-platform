@@ -65,7 +65,8 @@ export async function executeServerCommandAgent(input: string, context?: AgentEx
   }
   
   if (!serverIds || serverIds.length === 0) {
-    serverIds = [servers[0].id];
+    // 未指定范围（如定时任务）→ 覆盖全部启用服务器；此前只取第一台
+    serverIds = servers.map(s => s.id);
   }
   
   const finalCommand = command || inferCommandByInput(input);
