@@ -353,7 +353,7 @@ export async function generateWorkflowExecutionReport(
     execution_order: executionOrderDesc,
     node_details: nodeDetails,
     execution_summary: summaryResult.findings.length > 0
-      ? `共执行 ${summaryResult.stats.totalNodes} 个节点，成功 ${summaryResult.stats.successNodes} 个，失败 ${summaryResult.stats.failedNodes} 个；发现 ${summaryResult.findings.length} 条问题（严重 ${summaryResult.findings.filter(f => f.severity === 'critical').length} / 警告 ${summaryResult.findings.filter(f => f.severity === 'warning').length} / 提示 ${summaryResult.findings.filter(f => f.severity === 'info').length}），详见汇总摘要。`
+      ? `共执行 ${summaryResult.stats.totalNodes} 个节点，成功 ${summaryResult.stats.successNodes} 个，失败 ${summaryResult.stats.failedNodes} 个；发现 ${summaryResult.findings.length} 条问题（严重 ${summaryResult.findings.filter(f => f.severity === 'critical').length} / 警告 ${summaryResult.findings.filter(f => f.severity === 'warning').length} / 未取得数据 ${summaryResult.findings.filter(f => f.severity === 'no_data').length} / 提示 ${summaryResult.findings.filter(f => f.severity === 'info').length}），详见汇总摘要。`
       : `共执行 ${summaryResult.stats.totalNodes} 个节点，成功 ${summaryResult.stats.successNodes} 个，失败 ${summaryResult.stats.failedNodes} 个，未发现异常。`,
     error_section: errorSection,
     generated_time: new Date().toLocaleString()

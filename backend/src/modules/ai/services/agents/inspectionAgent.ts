@@ -85,9 +85,19 @@ async function inspectSingleServer(server: ServerRow): Promise<{
     }
     
     detail += `**检查结果**: ${successCount} ✅, ${failCount} ❌\n\n`;
-    
+
     for (const [checkName, result] of Object.entries(results)) {
-      detail += `${result.success ? '✅' : '❌'} **${checkName}**: ${result.success ? '通过' : '失败'}\n`;
+      if (result.success) {
+        detail += `✅ **${checkName}**: 通过\n`;
+      } else {
+        // 失败必须携带原因：区分「未取得数据（权限/通道/超时）」与「检查不通过」。
+        // 此前只输出"失败"，报告层无法判断，导致权限不足被误判为严重告警。
+        const reason = (result.error || result.stderr || '')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .substring(0, 160);
+        detail += `❌ **${checkName}**: 失败${reason ? ` — 原因: ${reason}` : ''}\n`;
+      }
     }
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : String(error);

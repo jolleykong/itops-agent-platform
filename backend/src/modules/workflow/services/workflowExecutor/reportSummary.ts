@@ -10,7 +10,7 @@ import { logger } from '../../../../utils/logger';
 import { generateCompletion } from '../../../ai/services/llm/llmService';
 import type { WorkflowNode, NodeResult } from '../../../../types';
 
-export type Severity = 'critical' | 'warning' | 'info';
+export type Severity = 'critical' | 'warning' | 'no_data' | 'info';
 
 export interface Finding {
   severity: Severity;
@@ -31,7 +31,10 @@ export interface NodeSummaryStats {
   inspectedServers: number;
   serverConnectErrors: number;
   checksPassed: number;
+  /** 检查项真实不通过（取得了数据但结果异常） */
   checksFailed: number;
+  /** 检查项未取得数据（权限不足/通道限制/超时等，未执行成功） */
+  checksNotExecuted: number;
 }
 
 export interface SummaryResult {
@@ -48,6 +51,27 @@ const WARNING_KEYWORDS = [
   'ssh', 'firewall', 'user', 'package', 'update', 'cron', 'login',
   '用户', '防火墙', '安全', '合规', '补丁', '登录', '口令', '密码',
 ];
+
+/**
+ * 「未取得数据」识别：失败原因是命令没执行成（权限不足/通道限制/超时），
+ * 而不是检查不通过（取得了数据但结果异常）。
+ * 命中时归为 no_data（不计入健康率分母），不当作资源/安全告警。
+ */
+const NOT_EXECUTED_PATTERNS = [
+  /权限不足|权限不够|无权限|权限拒绝|没有权限/,
+  /permission denied|not permitted|sudo|denied|forbidden|unauthorized/i,
+  /通道|只读监控|conn_type|zabbix 通道|无法执行|不支持 ssh|不支持命令/i,
+  /command (timeout|timed out)|命令超时|超时失败|timed out/i,
+  /command not found|no such file or directory|无法连接到命令/i,
+];
+
+export function isNotExecutedReason(text: string): boolean {
+  if (!text) return false;
+  return NOT_EXECUTED_PATTERNS.some((re) => re.test(text));
+}
+
+const NOT_EXECUTED_ADVICE =
+  '未取得检查数据（非业务异常）：为巡检账号配置 sudo 免密只读权限，或为该设备配置 SSH 采集通道后重试';
 
 // ── 建议动作映射（按检查项，未命中给通用建议）──
 const ADVICE_MAP: Array<[RegExp, string]> = [
@@ -110,6 +134,7 @@ export function summarizeNodeResults(
     serverConnectErrors: 0,
     checksPassed: 0,
     checksFailed: 0,
+    checksNotExecuted: 0,
   };
 
   for (const nodeId of Object.keys(nodeResults)) {
@@ -149,31 +174,64 @@ export function summarizeNodeResults(
           stats.checksFailed += failLines ? failLines.length : 0;
         }
 
-        // 失败检查项 → Finding
+        // 失败检查项 → Finding（新格式携带原因，可区分「未取得数据」与「真实不通过」）
         const checkRe = /❌\s*\*\*(.+?)\*\*:\s*(.*)/g;
         let cm: RegExpExecArray | null;
+        let notExecutedInServer = 0;
         while ((cm = checkRe.exec(body)) !== null) {
           const item = cm[1].trim();
-          findings.push({
-            severity: classifySeverity(item),
-            target: `${sec.name} (${sec.host})`,
-            item,
-            detail: cm[2]?.trim() || '检查失败',
-            advice: adviceFor(item),
-          });
+          const rawDetail = (cm[2]?.trim() || '检查失败')
+            .replace(/^失败\s*—?\s*原因:\s*/i, '')
+            .replace(/^失败$/, '');
+          if (isNotExecutedReason(rawDetail)) {
+            // 未取得数据：不计入健康率分母，不当作资源/安全告警
+            stats.checksNotExecuted++;
+            notExecutedInServer++;
+            findings.push({
+              severity: 'no_data',
+              target: `${sec.name} (${sec.host})`,
+              item,
+              detail: rawDetail,
+              advice: NOT_EXECUTED_ADVICE,
+            });
+          } else {
+            findings.push({
+              severity: classifySeverity(item),
+              target: `${sec.name} (${sec.host})`,
+              item,
+              detail: rawDetail || '检查失败',
+              advice: adviceFor(item),
+            });
+          }
+        }
+        // 修正统计行里的 ❌ 数：未取得数据的项不算"检查不通过"
+        if (statMatch && notExecutedInServer > 0) {
+          stats.checksFailed -= notExecutedInServer;
         }
 
-        // 服务器级错误（多为 SSH 连接失败）
+        // 服务器级错误（多为 SSH 连接失败或账号权限问题）
         const errMatch = body.match(/\*\*错误\*\*:\s*(.+)/);
         if (errMatch) {
-          stats.serverConnectErrors++;
-          findings.push({
-            severity: severityForNodeError(errMatch[1]),
-            target: `${sec.name} (${sec.host})`,
-            item: '服务器连接/巡检失败',
-            detail: errMatch[1].trim(),
-            advice: adviceFor('connect'),
-          });
+          const errMsg = errMatch[1].trim();
+          if (isNotExecutedReason(errMsg)) {
+            stats.checksNotExecuted++;
+            findings.push({
+              severity: 'no_data',
+              target: `${sec.name} (${sec.host})`,
+              item: '服务器巡检未执行',
+              detail: errMsg,
+              advice: NOT_EXECUTED_ADVICE,
+            });
+          } else {
+            stats.serverConnectErrors++;
+            findings.push({
+              severity: severityForNodeError(errMsg),
+              target: `${sec.name} (${sec.host})`,
+              item: '服务器连接/巡检失败',
+              detail: errMsg,
+              advice: adviceFor('connect'),
+            });
+          }
         }
       }
     } else {
@@ -206,7 +264,7 @@ export function summarizeNodeResults(
   }
 
   // 排序：severity 权重升序，同级保持出现顺序
-  const order: Record<Severity, number> = { critical: 0, warning: 1, info: 2 };
+  const order: Record<Severity, number> = { critical: 0, warning: 1, no_data: 2, info: 3 };
   findings.sort((a, b) => order[a.severity] - order[b.severity]);
 
   return { findings, stats };
@@ -215,6 +273,7 @@ export function summarizeNodeResults(
 const SEVERITY_META: Record<Severity, { icon: string; title: string }> = {
   critical: { icon: '🔴', title: '严重问题（需立即处理）' },
   warning: { icon: '🟠', title: '警告（需关注）' },
+  no_data: { icon: '🔵', title: '未执行（权限/通道限制，未取得数据）' },
   info: { icon: '🟡', title: '提示' },
 };
 
@@ -224,6 +283,7 @@ const SEVERITY_META: Record<Severity, { icon: string; title: string }> = {
 export function buildSummarySection(result: SummaryResult): string {
   const { findings, stats } = result;
 
+  // 健康率分母 = 通过 + 真实不通过（未取得数据的项不算检查不通过）
   const totalChecks = stats.checksPassed + stats.checksFailed;
   const healthRate = totalChecks > 0
     ? ((stats.checksPassed / totalChecks) * 100).toFixed(1)
@@ -235,10 +295,15 @@ export function buildSummarySection(result: SummaryResult): string {
   lines.push(
     `- **节点执行**: 共 ${stats.totalNodes} 个节点，成功 ${stats.successNodes}，失败 ${stats.failedNodes}`
   );
-  if (inspectedTotal > 0) {
+  if (inspectedTotal > 0 || stats.checksNotExecuted > 0) {
     lines.push(
-      `- **巡检范围**: ${inspectedTotal} 台服务器，检查项 ${totalChecks} 项，通过 ${stats.checksPassed}，失败 ${stats.checksFailed}（健康率 ${healthRate}%）`
+      `- **巡检范围**: ${inspectedTotal} 台服务器，检查项通过 ${stats.checksPassed}，不通过 ${stats.checksFailed}（健康率 ${healthRate}%）`
     );
+    if (stats.checksNotExecuted > 0) {
+      lines.push(
+        `- **未取得数据**: ${stats.checksNotExecuted} 项检查未执行成功（权限/通道/超时限制，不计入健康率）`
+      );
+    }
     if (stats.serverConnectErrors > 0) {
       lines.push(`- **连接失败**: ${stats.serverConnectErrors} 台服务器无法完成巡检`);
     }
@@ -253,12 +318,34 @@ export function buildSummarySection(result: SummaryResult): string {
 
   lines.push('');
   lines.push('### 问题清单（按重要程度排序）');
-  for (const severity of ['critical', 'warning', 'info'] as Severity[]) {
+  for (const severity of ['critical', 'warning', 'no_data', 'info'] as Severity[]) {
     const group = findings.filter((f) => f.severity === severity);
     if (group.length === 0) continue;
     const meta = SEVERITY_META[severity];
     lines.push('');
     lines.push(`#### ${meta.icon} ${meta.title}（${group.length} 条）`);
+
+    if (severity === 'no_data') {
+      // 未取得数据按「检查项 + 原因」聚合展示，避免同类条目刷屏
+      const aggregated = new Map<string, { item: string; reason: string; targets: string[] }>();
+      for (const f of group) {
+        const key = `${f.item}::${f.detail}`;
+        if (!aggregated.has(key)) aggregated.set(key, { item: f.item, reason: f.detail, targets: [] });
+        aggregated.get(key)!.targets.push(f.target);
+      }
+      for (const [, agg] of aggregated) {
+        const uniq = [...new Set(agg.targets)];
+        const shown = uniq.slice(0, 6).join('、');
+        const more = uniq.length > 6 ? ` 等 ${uniq.length} 台` : '';
+        lines.push(`- **${agg.item}**（${uniq.length} 台）：${shown}${more}`);
+        if (agg.reason && agg.reason !== '检查失败') {
+          lines.push(`  - 原因：${agg.reason}`);
+        }
+        lines.push(`  - 建议：${agg.advice}`);
+      }
+      continue;
+    }
+
     for (const f of group) {
       lines.push(`- **${f.target}** — ${f.item}：${f.detail}`);
       lines.push(`  - 建议：${f.advice}`);
@@ -280,20 +367,23 @@ export async function generateLlmConclusion(
   if (findings.length === 0 && stats.totalNodes === 0) return null;
 
   // 只喂给 LLM 排序后的前 40 条发现，控制 token
+  const severityLabel: Record<Severity, string> = {
+    critical: '严重', warning: '警告', no_data: '未取得数据', info: '提示',
+  };
   const findingsText = findings.slice(0, 40)
-    .map((f, i) => `${i + 1}. [${f.severity}] ${f.target} — ${f.item}: ${f.detail}`)
+    .map((f, i) => `${i + 1}. [${severityLabel[f.severity]}] ${f.target} — ${f.item}: ${f.detail}`)
     .join('\n');
 
   const prompt = `以下是运维工作流「${workflowName}」的执行结果汇总。
 
-执行统计：${stats.totalNodes} 个节点（成功 ${stats.successNodes}/失败 ${stats.failedNodes}）${stats.inspectedServers > 0 ? `，巡检 ${stats.inspectedServers + stats.serverConnectErrors} 台服务器，检查项通过 ${stats.checksPassed}/失败 ${stats.checksFailed}` : ''}。
+执行统计：${stats.totalNodes} 个节点（成功 ${stats.successNodes}/失败 ${stats.failedNodes}）${stats.inspectedServers > 0 || stats.checksNotExecuted > 0 ? `，巡检 ${stats.inspectedServers + stats.serverConnectErrors} 台服务器，检查项通过 ${stats.checksPassed}/不通过 ${stats.checksFailed}/未取得数据 ${stats.checksNotExecuted}（未取得数据为权限或通道限制，非业务异常）` : ''}。
 
 按重要程度排序的发现：
 ${findingsText || '（无具体发现，节点全部成功）'}
 
 请用中文输出一段 100~200 字的执行结论，要求：
 1. 第一句话给出整体健康度的定性判断；
-2. 按 严重→警告→提示 的优先级概括关键问题（点出最需要立即处理的对象与事项）；
+2. 按 严重→警告→提示 的优先级概括关键问题（点出最需要立即处理的对象与事项）；"未取得数据"类条目不是业务故障，只需一句话概括为采集能力问题，不要与真实故障混为一谈；
 3. 结尾给出 1~2 条最优先的处理建议。
 不要罗列全部条目，不要输出标题和列表以外的格式。`;
 
