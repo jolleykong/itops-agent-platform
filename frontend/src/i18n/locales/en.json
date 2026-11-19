@@ -90,7 +90,8 @@
     "costAnalysis": "Cost Analysis",
     "autoScale": "Auto Scale",
     "alertProviders": "Alert Providers",
-    "prometheusQuery": "Prometheus Query"
+    "prometheusQuery": "Prometheus Query",
+    "elasticsearchQuery": "Elasticsearch Query"
   },
   "toolLinks": {
     "title": "Ops Tool Navigator",

@@ -53,6 +53,7 @@ import {
   ServerCog,
   Code2,
   LineChart as LineChartIcon,
+  FileSearch,
   Archive,
   SlidersHorizontal,
   type LucideIcon,
@@ -187,6 +188,7 @@ export const navigationGroups: NavGroup[] = [
       { name: "nav.alertProviders", href: "/alerts/providers", icon: Radio },
       { name: "nav.zabbixQuery", href: "/zabbix", icon: Activity },
       { name: "nav.prometheusQuery", href: "/prometheus", icon: LineChartIcon },
+      { name: "nav.elasticsearchQuery", href: "/elasticsearch", icon: FileSearch },
     ],
   },
   {

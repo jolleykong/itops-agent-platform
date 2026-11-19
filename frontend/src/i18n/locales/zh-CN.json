@@ -90,6 +90,7 @@
     "mcpTester": "工具调用测试",
     "alertProviders": "告警源配置",
     "prometheusQuery": "Prometheus 查询",
+    "elasticsearchQuery": "Elasticsearch 查询",
     "workflowProviders": "工作流动作库"
   },
   "toolLinks": {

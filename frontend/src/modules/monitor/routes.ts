@@ -6,6 +6,7 @@ const BigScreenDashboard = lazy(() => import('./pages/BigScreenDashboard'));
 const CostAnalysis = lazy(() => import('./pages/CostAnalysis'));
 const PrometheusQuery = lazy(() => import('./pages/PrometheusQuery'));
 const ZabbixQuery = lazy(() => import('./pages/ZabbixQuery'));
+const ElasticsearchQuery = lazy(() => import('./pages/ElasticsearchQuery'));
 
 export const monitorRoutes = [
   { path: 'dashboard', element: Dashboard },
@@ -14,4 +15,5 @@ export const monitorRoutes = [
   { path: 'cost-analysis', element: CostAnalysis },
   { path: 'prometheus', element: PrometheusQuery },
   { path: 'zabbix', element: ZabbixQuery },
+  { path: 'elasticsearch', element: ElasticsearchQuery },
 ];

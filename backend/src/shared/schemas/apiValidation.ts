@@ -532,6 +532,35 @@ export const zabbixSchemas = {
   }),
 };
 
+// ── Elasticsearch 日志查询 schemas（2026-11-19，elasticsearchRoutes.ts 引用） ──
+
+const elasticsearchClientOptions = z.object({
+  url: z.string().url('Elasticsearch URL 必须为合法 URL'),
+  username: z.string().min(1).max(255).optional(),
+  password: z.string().max(500).optional(),
+  timeoutMs: z.number().int().min(1000).max(30000).optional(),
+});
+
+export const elasticsearchSchemas = {
+  test: elasticsearchClientOptions,
+  search: elasticsearchClientOptions.extend({
+    index: z.string().min(1).max(200).regex(/^[A-Za-z0-9._\-\*\+\,]+$/, '索引名包含非法字符'),
+    queryString: z.string().max(2000).optional(),
+    logLevel: z.array(z.enum(['error', 'warn', 'info', 'critical', 'fatal', 'debug', 'trace'])).max(7).optional(),
+    hostName: z.string().max(200).optional(),
+    sid: z.string().max(100).optional(),
+    timeField: z.string().max(100).optional(),
+    // 时间窗上限 720h（30 天）——服务端再 clamp 一次
+    rangeHours: z.number().int().min(1).max(720).optional(),
+    size: z.number().int().min(1).max(500).optional(),
+    groupBy: z.enum(['host', 'level', 'sid', 'none']).optional(),
+  }),
+  rawSearch: elasticsearchClientOptions.extend({
+    index: z.string().min(1).max(200).regex(/^[A-Za-z0-9._\-\*\+\,]+$/, '索引名包含非法字符'),
+    dsl: z.record(z.unknown()),
+  }),
+};
+
 // ── 告警关联 schemas（v4 修复，alertCorrelationRoutes.ts 引用但原本未导出） ──
 
 export const alertCorrelationSchemas = {
