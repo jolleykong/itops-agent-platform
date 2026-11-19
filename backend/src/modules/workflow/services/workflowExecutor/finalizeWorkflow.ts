@@ -12,6 +12,46 @@ import type {
   WorkflowParsed,
 } from '../../../../types';
 import { addTaskLog, isDuplicateKnowledgeBase } from './helpers';
+import {
+  summarizeNodeResults,
+  buildSummarySection,
+  generateLlmConclusion,
+} from './reportSummary';
+
+/** 工作流执行报告模板 v2：新增汇总摘要（优先级排序）与 LLM 执行结论 */
+const WORKFLOW_REPORT_TEMPLATE_V2 = `# 工作流执行报告
+
+## 基本信息
+- **工作流名称**: {{workflow_name}}
+- **执行任务ID**: {{task_id}}
+- **执行状态**: {{execution_status}}
+- **开始时间**: {{start_time}}
+- **结束时间**: {{end_time}}
+
+## 汇总摘要
+{{summary_section}}
+
+{{llm_conclusion}}
+
+## 执行总结
+{{execution_summary}}
+
+## 执行顺序（附录）
+{{execution_order}}
+
+## 节点执行详情（附录）
+{{node_details}}
+
+{{error_section}}
+
+---
+报告生成时间: {{generated_time}}`;
+
+const WORKFLOW_REPORT_TEMPLATE_VARIABLES = [
+  'workflow_name', 'task_id', 'execution_status', 'start_time', 'end_time',
+  'summary_section', 'llm_conclusion', 'execution_summary',
+  'execution_order', 'node_details', 'error_section', 'generated_time',
+];
 
 export async function finalizeWorkflow(
   taskId: string,
@@ -226,8 +266,9 @@ export async function generateWorkflowExecutionReport(
   status: 'completed' | 'failed',
   errorMessage?: string
 ) {
-  logger.info('📄 开始生成工作流执行报告...');
+  logger.info('📄 开始生成工作流执行报告（v2：汇总摘要 + 优先级排序）...');
 
+  // ── 报告模板：若已存在的模板是 v1（无汇总变量），升级为 v2 ──
   const templates = reportService.getTemplates();
   let workflowTemplate = templates.find(t => t.name.includes('工作流执行报告'));
 
@@ -237,11 +278,18 @@ export async function generateWorkflowExecutionReport(
       name: '工作流执行报告',
       description: '工作流执行完成后自动生成的执行报告',
       type: 'inspection',
-      content: `# 工作流执行报告\n\n## 基本信息\n- **工作流名称**: {{workflow_name}}\n- **执行任务ID**: {{task_id}}\n- **执行状态**: {{execution_status}}\n- **开始时间**: {{start_time}}\n- **结束时间**: {{end_time}}\n\n## 执行顺序\n{{execution_order}}\n\n## 节点执行详情\n{{node_details}}\n\n## 执行总结\n{{execution_summary}}\n\n{{error_section}}\n\n---\n报告生成时间: {{generated_time}}`,
-      variables: ['workflow_name', 'task_id', 'execution_status', 'start_time', 'end_time', 'execution_order', 'node_details', 'execution_summary', 'error_section', 'generated_time'],
+      content: WORKFLOW_REPORT_TEMPLATE_V2,
+      variables: WORKFLOW_REPORT_TEMPLATE_VARIABLES,
       is_preset: true
     });
     logger.info('✅ 工作流执行报告模板创建成功:', workflowTemplate.id);
+  } else if (!workflowTemplate.variables.includes('summary_section')) {
+    logger.info('📄 检测到 v1 模板，升级为 v2（含汇总摘要）:', workflowTemplate.id);
+    workflowTemplate = reportService.updateTemplate(workflowTemplate.id, {
+      content: WORKFLOW_REPORT_TEMPLATE_V2,
+      variables: WORKFLOW_REPORT_TEMPLATE_VARIABLES,
+    }) ?? workflowTemplate;
+    logger.info('✅ 工作流执行报告模板已升级');
   } else {
     logger.info('✅ 使用已存在的工作流执行报告模板:', workflowTemplate.id);
   }
@@ -266,7 +314,7 @@ export async function generateWorkflowExecutionReport(
     detail += `- **状态**: ${nodeResult?.status || 'pending'}\n`;
 
     if (nodeResult?.output) {
-      detail += `- **输出**: \n${nodeResult.output.substring(0, 500)}${nodeResult.output.length > 500 ? '...' : ''}\n`;
+      detail += `- **输出**: \n${nodeResult.output.substring(0, 800)}${nodeResult.output.length > 800 ? '…（详见报告汇总与原始输出）' : ''}\n`;
     }
 
     if (nodeResult?.error) {
@@ -276,11 +324,18 @@ export async function generateWorkflowExecutionReport(
     return detail;
   }).join('\n\n');
 
-  const successCount = Object.values(nodeResults).filter((r) => r.status === 'success').length;
-  const failedCount = Object.values(nodeResults).filter((r) => r.status === 'failed').length;
-  const totalCount = Object.keys(nodeResults).length;
+  // ── 结构化汇总：解析节点输出 → 分级排序的问题清单 + 总览统计 ──
+  const summaryResult = summarizeNodeResults(nodes, nodeResults);
+  const summarySection = buildSummarySection(summaryResult);
 
-  const executionSummary = `共执行 ${totalCount} 个节点，成功 ${successCount} 个，失败 ${failedCount} 个。`;
+  // ── LLM 执行结论（可选增强，失败自动降级）──
+  let llmConclusion = '';
+  if (summaryResult.findings.length > 0) {
+    const conclusion = await generateLlmConclusion(workflow.name, summaryResult);
+    llmConclusion = conclusion
+      ? `## 执行结论\n\n${conclusion}`
+      : `## 执行结论\n\n（AI 结论暂不可用）请优先处理"汇总摘要"中 🔴 严重问题，其次 🟠 警告项。`;
+  }
 
   let errorSection = '';
   if (status === 'failed' && errorMessage) {
@@ -293,9 +348,13 @@ export async function generateWorkflowExecutionReport(
     execution_status: status === 'completed' ? '成功完成' : '执行失败',
     start_time: startTime ? new Date(startTime).toLocaleString() : '-',
     end_time: endTime ? new Date(endTime).toLocaleString() : '-',
+    summary_section: summarySection,
+    llm_conclusion: llmConclusion,
     execution_order: executionOrderDesc,
     node_details: nodeDetails,
-    execution_summary: executionSummary,
+    execution_summary: summaryResult.findings.length > 0
+      ? `共执行 ${summaryResult.stats.totalNodes} 个节点，成功 ${summaryResult.stats.successNodes} 个，失败 ${summaryResult.stats.failedNodes} 个；发现 ${summaryResult.findings.length} 条问题（严重 ${summaryResult.findings.filter(f => f.severity === 'critical').length} / 警告 ${summaryResult.findings.filter(f => f.severity === 'warning').length} / 提示 ${summaryResult.findings.filter(f => f.severity === 'info').length}），详见汇总摘要。`
+      : `共执行 ${summaryResult.stats.totalNodes} 个节点，成功 ${summaryResult.stats.successNodes} 个，失败 ${summaryResult.stats.failedNodes} 个，未发现异常。`,
     error_section: errorSection,
     generated_time: new Date().toLocaleString()
   };
