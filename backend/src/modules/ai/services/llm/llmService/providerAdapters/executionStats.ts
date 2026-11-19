@@ -13,6 +13,28 @@ import { logger } from '../../../../../../utils/logger';
 import { agentExecutionRepository, agentRepository } from '../../../../../../repositories';
 import type { AgentExecutionMetadata } from './types';
 
+/**
+ * 系统占位 Agent（enabled=0）：非 Agent 的 LLM 调用（compliance-batch /
+ * copilot / RCA / multiAgent 等）的 agentId 是标签而非 agents.id，直接写
+ * agent_executions 会触发 FOREIGN KEY 约束失败 → 统计被丢弃并刷错误日志。
+ * 此类调用统一挂到占位 Agent，原始标签保留在 agent_name 列。
+ */
+const SYSTEM_AGENT_ID = '00000000-0000-4000-8000-000000000001';
+const SYSTEM_AGENT_NAME = '系统内部调用';
+
+/** 校验 agentId 可落库；不可（不存在/为空）时归一到系统占位 Agent */
+function resolveAgentId(agentId: string): string {
+  if (agentId) {
+    try {
+      if (agentRepository.getById(agentId)) return agentId;
+    } catch { /* fall through to system agent */ }
+  }
+  try {
+    agentRepository.ensureSystemAgent(SYSTEM_AGENT_ID, SYSTEM_AGENT_NAME);
+  } catch { /* ignore */ }
+  return SYSTEM_AGENT_ID;
+}
+
 /** 记录一次 Agent 执行（含 input/output/status/executionTimeMs 等） */
 export function recordAgentExecution(
   agentId: string,
@@ -27,8 +49,8 @@ export function recordAgentExecution(
   try {
     agentExecutionRepository.create({
       id: randomUUID(),
-      agentId,
-      agentName,
+      agentId: resolveAgentId(agentId),
+      agentName: agentName || SYSTEM_AGENT_NAME,
       inputText,
       outputText,
       status,

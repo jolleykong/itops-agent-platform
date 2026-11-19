@@ -143,10 +143,10 @@ export const navigationGroups: NavGroup[] = [
         href: "/workflows/providers",
         icon: SlidersHorizontal,
       },
+      { name: "nav.scheduledTasks", href: "/scheduled-tasks", icon: Clock },
       { name: "nav.tasks", href: "/tasks", icon: Play },
       { name: "nav.approvals", href: "/approvals", icon: ShieldCheck },
       { name: "nav.scripts", href: "/scripts", icon: FileCode },
-      { name: "nav.scheduledTasks", href: "/scheduled-tasks", icon: Clock },
       {
         name: "nav.configTemplates",
         href: "/config-templates",

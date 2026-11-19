@@ -304,6 +304,21 @@ export const agentRepository = {
   // ── UPDATE ──
 
   /**
+   * 确保系统占位 Agent 存在（幂等，INSERT OR IGNORE）
+   *
+   * 用途：非 Agent 的 LLM 调用（compliance-batch / copilot / RCA / multiAgent 等）
+   * 传给 generateCompletion 的 agentId 是标签而非 agents.id，直接写
+   * agent_executions 会触发 FOREIGN KEY 约束失败；这些统计统一挂到占位
+   * Agent（enabled=0 不参与编排），原始标签保留在 agent_name 列。
+   */
+  ensureSystemAgent(id: string, name: string): void {
+    db.prepare(`
+      INSERT OR IGNORE INTO agents (id, name, avatar, role, category, description, enabled, is_preset)
+      VALUES (?, ?, '🤖', '内部 LLM 调用', '系统', '非 Agent LLM 调用（合规分析/Copilot/RCA 等）的执行统计占位记录，不参与编排', 0, 1)
+    `).run(id, name);
+  },
+
+  /**
    * 动态更新 Agent 字段（构建 SET 子句）
    * 对应 agentRoutes.ts U1（原为固定字段，这里改为动态以支持部分更新）
    */
