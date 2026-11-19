@@ -1,6 +1,7 @@
 import { Router, type Request } from 'express';
 import { logger } from '../../../utils/logger';
 import { validateBody } from '../../../middleware/validation';
+import { requireRole } from '../../../middleware/auth';
 import { elasticsearchSchemas } from '../../../shared/schemas/apiValidation';
 import {
   test,
@@ -9,27 +10,75 @@ import {
   rawSearch,
   type EsClientOptions,
 } from '../services/elasticsearchService';
+import { elasticsearchConnectionStore } from '../services/elasticsearchConnectionStore';
 
 const router = Router();
 
-function pickClientOptions(body: Record<string, unknown>): EsClientOptions {
+const NOT_CONFIGURED = 'Elasticsearch 连接未配置：请先在「连接设置」中保存地址与凭据';
+
+/**
+ * 客户端选项解析：请求体未携带 url/凭据时回退到后端持久化配置。
+ * （用户定稿：凭据加密存储在后端，前端保存后不再持有。）
+ */
+function pickClientOptions(body: Record<string, unknown>): EsClientOptions | null {
   const b = body as {
-    url: string;
+    url?: string;
     username?: string;
     password?: string;
     timeoutMs?: number;
   };
+
+  // 请求体自带完整 url → 直接用（兼容未持久化时的临时查询）
+  if (b.url && b.url.trim()) {
+    return {
+      url: b.url,
+      basicAuth: b.username ? { username: b.username, password: b.password ?? '' } : undefined,
+      timeoutMs: b.timeoutMs,
+    };
+  }
+
+  // 否则回退持久化配置
+  const stored = elasticsearchConnectionStore.get();
+  if (!stored) return null;
   return {
-    url: b.url,
-    basicAuth: b.username ? { username: b.username, password: b.password ?? '' } : undefined,
-    timeoutMs: b.timeoutMs,
+    ...elasticsearchConnectionStore.toClientOptions(stored),
+    timeoutMs: b.timeoutMs ?? stored.timeoutMs,
   };
 }
+
+// GET /api/v1/monitor/elasticsearch/config —— 掩码视图（url + 是否已配置，不回传凭据）
+router.get('/config', async (_req: Request, res) => {
+  res.json({ success: true, data: elasticsearchConnectionStore.getMasked() });
+});
+
+// POST /api/v1/monitor/elasticsearch/config —— 保存（admin；凭据 undefined=不改 / ''=删除）
+router.post(
+  '/config',
+  validateBody(elasticsearchSchemas.saveConfig),
+  requireRole('admin'),
+  async (req: Request, res) => {
+    const body = req.body as {
+      url?: string;
+      username?: string;
+      password?: string;
+      timeoutMs?: number | string;
+    };
+    const result = elasticsearchConnectionStore.save(body);
+    if (!result.success) {
+      return res.status(400).json({ success: false, error: result.error });
+    }
+    res.json({ success: true, data: elasticsearchConnectionStore.getMasked() });
+  },
+);
 
 // POST /api/v1/monitor/elasticsearch/test —— 连接测试（size=0 聚合，兼容 viewer 只读角色）
 router.post('/test', validateBody(elasticsearchSchemas.test), async (req: Request, res) => {
   try {
-    const result = await test(pickClientOptions(req.body));
+    const opts = pickClientOptions(req.body);
+    if (!opts) {
+      return res.status(400).json({ success: false, error: NOT_CONFIGURED });
+    }
+    const result = await test(opts);
     if (!result.success) {
       return res.status(502).json({ success: false, error: result.error });
     }
@@ -43,7 +92,11 @@ router.post('/test', validateBody(elasticsearchSchemas.test), async (req: Reques
 // POST /api/v1/monitor/elasticsearch/indices —— 索引族枚举
 router.post('/indices', validateBody(elasticsearchSchemas.test), async (req: Request, res) => {
   try {
-    const result = await listIndexFamilies(pickClientOptions(req.body));
+    const opts = pickClientOptions(req.body);
+    if (!opts) {
+      return res.status(400).json({ success: false, error: NOT_CONFIGURED });
+    }
+    const result = await listIndexFamilies(opts);
     if (!result.success) {
       return res.status(502).json({ success: false, error: result.error });
     }
@@ -68,7 +121,11 @@ router.post('/search', validateBody(elasticsearchSchemas.search), async (req: Re
       size?: number;
       groupBy?: 'host' | 'level' | 'sid' | 'none';
     };
-    const result = await search(pickClientOptions(req.body), {
+    const opts = pickClientOptions(req.body);
+    if (!opts) {
+      return res.status(400).json({ success: false, error: NOT_CONFIGURED });
+    }
+    const result = await search(opts, {
       index: body.index,
       queryString: body.queryString,
       logLevel: body.logLevel,
@@ -96,7 +153,11 @@ router.post(
   async (req: Request, res) => {
     try {
       const body = req.body as { index: string; dsl: Record<string, unknown> };
-      const result = await rawSearch(pickClientOptions(req.body), body.index, body.dsl);
+      const opts = pickClientOptions(req.body);
+      if (!opts) {
+        return res.status(400).json({ success: false, error: NOT_CONFIGURED });
+      }
+      const result = await rawSearch(opts, body.index, body.dsl);
       if (!result.success) {
         return res.status(502).json({ success: false, error: result.error });
       }

@@ -1,22 +1,22 @@
-import { useState, useCallback } from 'react';
-import { FileSearch, Play, Plug, ChevronDown, ChevronUp } from 'lucide-react';
-import { message } from 'antd';
+import { useState, useEffect, useCallback } from 'react';
+import { FileSearch, Play, Settings, Plug } from 'lucide-react';
+import { message, Modal } from 'antd';
 import api from '../../../lib/api';
 import { getAxiosErrorMessage } from '../../../lib/errorHandler';
 import { logger } from '../../../lib/logger';
-
-interface AuthConfig {
-  url: string;
-  username: string;
-  password: string;
-  timeoutMs: string;
-}
 
 interface IndexFamily {
   family: string;
   indexCount: number;
   docCount: number;
   latestIndex?: string;
+}
+
+interface EsConfigMasked {
+  url: string;
+  hasUsername: boolean;
+  hasPassword: boolean;
+  timeoutMs?: number;
 }
 
 interface SearchHit {
@@ -37,20 +37,6 @@ interface SearchResponse {
 
 const LEVELS = ['error', 'critical', 'warn', 'fatal', 'info', 'debug', 'trace'] as const;
 
-/**
- * 响应归一：api 实例的响应拦截器已把 { success, data } 信封解包为内层 data，
- * 但 success=false（HTTP 2xx 特例）或旧结构时 data 可能仍是信封——两种形态都兼容。
- */
-function asPayload<T>(data: unknown): T | null {
-  if (data && typeof data === 'object' && 'success' in (data as Record<string, unknown>)) {
-    const env = data as { success: boolean; data?: T; error?: string };
-    if (env.success) return (env.data ?? null) as T | null;
-    // 信封失败分支：交给 catch/错误提示路径，此处以 null 表示失败
-    throw new Error(env.error || '请求失败');
-  }
-  return (data ?? null) as T | null;
-}
-
 const RANGE_OPTIONS = [
   { label: '1 小时', value: 1 },
   { label: '6 小时', value: 6 },
@@ -67,13 +53,29 @@ const GROUP_OPTIONS = [
   { label: '不聚合', value: 'none' },
 ];
 
+/**
+ * 响应归一：api 实例的响应拦截器已把 { success, data } 信封解包为内层 data，
+ * 但 success=false（HTTP 2xx 特例）或旧结构时 data 可能仍是信封——两种形态都兼容。
+ */
+function asPayload<T>(data: unknown): T | null {
+  if (data && typeof data === 'object' && 'success' in (data as Record<string, unknown>)) {
+    const env = data as { success: boolean; data?: T; error?: string };
+    if (env.success) return (env.data ?? null) as T | null;
+    throw new Error(env.error || '请求失败');
+  }
+  return (data ?? null) as T | null;
+}
+
 export default function ElasticsearchQuery() {
-  const [auth, setAuth] = useState<AuthConfig>({
-    url: 'http://10.240.22.33:9200',
-    username: 'itopsuser',
-    password: '',
-    timeoutMs: '15000',
-  });
+  // 连接配置（后端持久化；凭据保存后不回传，仅布尔位）
+  const [config, setConfig] = useState<EsConfigMasked | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [formUrl, setFormUrl] = useState('');
+  const [formUsername, setFormUsername] = useState('');
+  const [formPassword, setFormPassword] = useState('');
+  const [formTimeout, setFormTimeout] = useState('15000');
+  const [saving, setSaving] = useState(false);
+
   const [families, setFamilies] = useState<IndexFamily[]>([]);
   const [index, setIndex] = useState<string>('oracle-2026.11');
   const [rangeHours, setRangeHours] = useState<number>(24);
@@ -91,40 +93,72 @@ export default function ElasticsearchQuery() {
   const [rawResult, setRawResult] = useState<Array<Record<string, unknown>> | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
-  const updateAuth = (key: keyof AuthConfig, value: string) => {
-    setAuth((prev) => ({ ...prev, [key]: value }));
+  const loadConfig = useCallback(async () => {
+    try {
+      const { data } = await api.get('/monitor/elasticsearch/config');
+      const masked = asPayload<EsConfigMasked>(data);
+      if (masked) setConfig(masked);
+    } catch (err) {
+      logger.error('[ElasticsearchQuery] load config failed:', err);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadConfig();
+  }, [loadConfig]);
+
+  const openSettings = () => {
+    setFormUrl(config?.url ?? '');
+    setFormUsername('');
+    setFormPassword('');
+    setFormTimeout(String(config?.timeoutMs ?? 15000));
+    setSettingsOpen(true);
   };
 
-  const buildAuthPayload = useCallback(() => ({
-    url: auth.url.trim(),
-    username: auth.username.trim() || undefined,
-    password: auth.password || undefined,
-    timeoutMs: parseInt(auth.timeoutMs, 10) || 15000,
-  }), [auth]);
-
-  const handleTest = async () => {
-    if (!auth.url.trim()) {
+  const handleSaveConfig = async () => {
+    if (!formUrl.trim()) {
       message.warning('请输入 Elasticsearch URL');
       return;
     }
+    setSaving(true);
+    try {
+      // 语义：undefined=不修改该项，''=删除，有值=覆盖。留空即不改。
+      const body: Record<string, unknown> = {
+        url: formUrl.trim(),
+        timeoutMs: parseInt(formTimeout, 10) || 15000,
+      };
+      if (formUsername.trim()) body.username = formUsername.trim();
+      if (formPassword) body.password = formPassword;
+      const { data } = await api.post('/monitor/elasticsearch/config', body);
+      const masked = asPayload<EsConfigMasked>(data);
+      if (masked) {
+        setConfig(masked);
+        setSettingsOpen(false);
+        message.success('连接配置已保存（凭据加密存储于后端）');
+      }
+    } catch (err) {
+      message.error(getAxiosErrorMessage(err, '保存失败'));
+      logger.error('[ElasticsearchQuery] save config failed:', err);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleTest = async () => {
     setTesting(true);
     try {
-      const { data } = await api.post('/monitor/elasticsearch/test', buildAuthPayload());
+      const { data } = await api.post('/monitor/elasticsearch/test', {});
       const payload = asPayload<{ totalDocs: number; indexFamilies: number }>(data);
       if (payload) {
         message.success(`连接成功：${payload.indexFamilies} 个索引族，可读文档 ${payload.totalDocs.toLocaleString()} 条`);
-        // 顺带拉取索引族列表供选择
-        const { data: idxData } = await api.post('/monitor/elasticsearch/indices', buildAuthPayload());
+        const { data: idxData } = await api.post('/monitor/elasticsearch/indices', {});
         const families = asPayload<IndexFamily[]>(idxData);
-        if (families) {
-          setFamilies(families);
-        }
+        if (families) setFamilies(families);
       } else {
         message.error('连接失败');
       }
     } catch (err) {
-      const msg = getAxiosErrorMessage(err, '连接失败');
-      message.error(msg);
+      message.error(getAxiosErrorMessage(err, '连接失败'));
       logger.error('[ElasticsearchQuery] test failed:', err);
     } finally {
       setTesting(false);
@@ -133,7 +167,7 @@ export default function ElasticsearchQuery() {
 
   const handleLoadFamilies = async () => {
     try {
-      const { data } = await api.post('/monitor/elasticsearch/indices', buildAuthPayload());
+      const { data } = await api.post('/monitor/elasticsearch/indices', {});
       const families = asPayload<IndexFamily[]>(data);
       if (families) {
         setFamilies(families);
@@ -147,10 +181,6 @@ export default function ElasticsearchQuery() {
   };
 
   const handleQuery = async () => {
-    if (!auth.url.trim()) {
-      message.warning('请输入 Elasticsearch URL');
-      return;
-    }
     if (!index.trim()) {
       message.warning('请输入索引名或索引模式（如 oracle-2026.11 或 oracle-*）');
       return;
@@ -169,7 +199,6 @@ export default function ElasticsearchQuery() {
           return;
         }
         const { data } = await api.post('/monitor/elasticsearch/raw-search', {
-          ...buildAuthPayload(),
           index: index.trim(),
           dsl,
         });
@@ -183,7 +212,6 @@ export default function ElasticsearchQuery() {
         }
       } else {
         const { data } = await api.post('/monitor/elasticsearch/search', {
-          ...buildAuthPayload(),
           index: index.trim(),
           queryString: queryString.trim() || undefined,
           logLevel: levels.length > 0 ? levels : undefined,
@@ -222,17 +250,36 @@ export default function ElasticsearchQuery() {
           </div>
         </div>
 
-        {/* 连接配置 */}
-        <section className="bg-surface rounded-xl p-5 border border-border space-y-3">
-          <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold text-text-primary flex items-center gap-2">
-              <Plug className="w-4 h-4 text-primary" />
-              连接配置
-            </h2>
+        {/* 连接状态栏：设置收进按钮 */}
+        <section className="bg-surface rounded-xl p-4 border border-border flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <Plug className={`w-4 h-4 ${config?.url ? 'text-emerald-400' : 'text-text-secondary'}`} />
+            {config?.url ? (
+              <div className="text-sm">
+                <span className="text-text-primary font-medium">已配置</span>
+                <span className="ml-2 font-mono text-text-secondary">{config.url}</span>
+                <span className="ml-2 text-xs text-text-secondary">
+                  凭据：{config.hasUsername ? '已保存' : '未保存'}（加密存储于后端，不再回传）
+                </span>
+              </div>
+            ) : (
+              <span className="text-sm text-text-secondary">连接未配置 —— 请先在「连接设置」中保存地址与凭据</span>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={openSettings}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-background border border-border text-text-secondary text-xs font-medium hover:text-text-primary transition-colors"
+            >
+              <Settings className="w-3.5 h-3.5" />
+              连接设置
+            </button>
             <button
               type="button"
               onClick={handleTest}
-              disabled={testing}
+              disabled={testing || !config?.url}
+              title={config?.url ? '测试连接' : '请先保存连接配置'}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-primary/10 text-primary text-xs font-medium hover:bg-primary/20 disabled:opacity-50 transition-colors"
             >
               {testing ? (
@@ -242,57 +289,19 @@ export default function ElasticsearchQuery() {
               )}
               测试连接
             </button>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <div className="md:col-span-2">
-              <label className="block text-xs text-text-secondary mb-1">Elasticsearch URL *</label>
-              <input
-                type="text"
-                value={auth.url}
-                onChange={(e) => updateAuth('url', e.target.value)}
-                placeholder="http://es-host:9200"
-                className="w-full px-3 py-2 rounded-lg bg-background border border-border text-text-primary text-sm font-mono focus:outline-none focus:border-primary/50"
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-text-secondary mb-1">用户名</label>
-              <input
-                type="text"
-                value={auth.username}
-                onChange={(e) => updateAuth('username', e.target.value)}
-                placeholder="可选（Basic Auth）"
-                className="w-full px-3 py-2 rounded-lg bg-background border border-border text-text-primary text-sm focus:outline-none focus:border-primary/50"
-              />
-            </div>
-            <div>
-              <label className="block text-xs text-text-secondary mb-1">密码</label>
-              <input
-                type="password"
-                value={auth.password}
-                onChange={(e) => updateAuth('password', e.target.value)}
-                placeholder="可选"
-                className="w-full px-3 py-2 rounded-lg bg-background border border-border text-text-primary text-sm focus:outline-none focus:border-primary/50"
-              />
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
             <button
               type="button"
               onClick={handleLoadFamilies}
-              className="px-3 py-1.5 rounded-lg bg-background border border-border text-text-secondary text-xs hover:text-text-primary transition-colors"
+              disabled={!config?.url}
+              className="px-3 py-1.5 rounded-lg bg-background border border-border text-text-secondary text-xs hover:text-text-primary disabled:opacity-50 transition-colors"
             >
-              加载索引族列表
+              加载索引族
             </button>
-            {families.length > 0 && (
-              <span className="text-xs text-text-secondary">
-                共 {families.length} 个索引族，文档总量 {families.reduce((s, f) => s + f.docCount, 0).toLocaleString()}
-              </span>
-            )}
           </div>
+        </section>
 
-          {families.length > 0 && (
+        {families.length > 0 && (
+          <section className="bg-surface rounded-xl p-4 border border-border">
             <div className="overflow-auto max-h-48 rounded-lg border border-border">
               <table className="w-full text-xs">
                 <thead className="bg-background sticky top-0">
@@ -325,30 +334,28 @@ export default function ElasticsearchQuery() {
                 </tbody>
               </table>
             </div>
-          )}
-        </section>
+          </section>
+        )}
 
         {/* 查询条件 */}
         <section className="bg-surface rounded-xl p-5 border border-border space-y-3">
           <div className="flex items-center justify-between">
             <h2 className="text-sm font-semibold text-text-primary">查询条件</h2>
-            <div className="flex items-center gap-2">
-              <div className="flex items-center gap-1 bg-background rounded-lg p-0.5 border border-border">
-                <button
-                  type="button"
-                  onClick={() => setRawMode(false)}
-                  className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${!rawMode ? 'bg-primary/15 text-primary' : 'text-text-secondary hover:text-text-primary'}`}
-                >
-                  结构化
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setRawMode(true)}
-                  className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${rawMode ? 'bg-primary/15 text-primary' : 'text-text-secondary hover:text-text-primary'}`}
-                >
-                  原生 DSL
-                </button>
-              </div>
+            <div className="flex items-center gap-1 bg-background rounded-lg p-0.5 border border-border">
+              <button
+                type="button"
+                onClick={() => setRawMode(false)}
+                className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${!rawMode ? 'bg-primary/15 text-primary' : 'text-text-secondary hover:text-text-primary'}`}
+              >
+                结构化
+              </button>
+              <button
+                type="button"
+                onClick={() => setRawMode(true)}
+                className={`px-3 py-1 rounded-md text-xs font-medium transition-colors ${rawMode ? 'bg-primary/15 text-primary' : 'text-text-secondary hover:text-text-primary'}`}
+              >
+                原生 DSL
+              </button>
             </div>
           </div>
 
@@ -418,7 +425,6 @@ export default function ElasticsearchQuery() {
                 onClick={() => setShowAdvanced((v) => !v)}
                 className="flex items-center gap-1 text-xs text-text-secondary hover:text-text-primary"
               >
-                {showAdvanced ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
                 {showAdvanced ? '收起' : '展开'}高级过滤（主机名 / SID / 聚合维度 / 返回条数）
               </button>
 
@@ -488,7 +494,8 @@ export default function ElasticsearchQuery() {
             <button
               type="button"
               onClick={handleQuery}
-              disabled={loading}
+              disabled={loading || !config?.url}
+              title={config?.url ? '查询' : '请先保存连接配置'}
               className="flex items-center gap-2 px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary/90 disabled:opacity-50 transition-colors"
             >
               {loading ? (
@@ -585,6 +592,69 @@ export default function ElasticsearchQuery() {
             </div>
           </section>
         )}
+
+        {/* 连接设置弹窗 */}
+        <Modal
+          title="Elasticsearch 连接设置"
+          open={settingsOpen}
+          onOk={handleSaveConfig}
+          onCancel={() => setSettingsOpen(false)}
+          okText="保存"
+          cancelText="取消"
+          confirmLoading={saving}
+          destroyOnClose
+        >
+          <div className="space-y-3 py-2">
+            <div>
+              <label className="block text-xs text-text-secondary mb-1">URL *</label>
+              <input
+                type="text"
+                value={formUrl}
+                onChange={(e) => setFormUrl(e.target.value)}
+                placeholder="http://es-host:9200"
+                className="w-full px-3 py-2 rounded-lg bg-background border border-border text-text-primary text-sm font-mono focus:outline-none focus:border-primary/50"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-text-secondary mb-1">
+                用户名{config?.hasUsername ? '（已保存，留空不修改；清空保存将删除）' : ''}
+              </label>
+              <input
+                type="text"
+                value={formUsername}
+                onChange={(e) => setFormUsername(e.target.value)}
+                placeholder={config?.hasUsername ? '已保存（不回显）' : '可选'}
+                className="w-full px-3 py-2 rounded-lg bg-background border border-border text-text-primary text-sm focus:outline-none focus:border-primary/50"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-text-secondary mb-1">
+                密码{config?.hasPassword ? '（已保存，留空不修改；清空保存将删除）' : ''}
+              </label>
+              <input
+                type="password"
+                value={formPassword}
+                onChange={(e) => setFormPassword(e.target.value)}
+                placeholder={config?.hasPassword ? '已保存（不回显）' : '可选'}
+                className="w-full px-3 py-2 rounded-lg bg-background border border-border text-text-primary text-sm focus:outline-none focus:border-primary/50"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-text-secondary mb-1">超时（ms）</label>
+              <input
+                type="number"
+                value={formTimeout}
+                onChange={(e) => setFormTimeout(e.target.value)}
+                min={1000}
+                max={30000}
+                className="w-full px-3 py-2 rounded-lg bg-background border border-border text-text-primary text-sm focus:outline-none focus:border-primary/50"
+              />
+            </div>
+            <p className="text-xs text-text-secondary">
+              凭据使用 AES-256-GCM 加密存储于后端；保存后不再回传用户名与密码。
+            </p>
+          </div>
+        </Modal>
       </div>
     </div>
   );

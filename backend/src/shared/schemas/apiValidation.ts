@@ -534,8 +534,9 @@ export const zabbixSchemas = {
 
 // ── Elasticsearch 日志查询 schemas（2026-11-19，elasticsearchRoutes.ts 引用） ──
 
+// url/凭据可选：缺省时后端回退持久化配置（凭据加密存储于后端，前端保存后不再持有）
 const elasticsearchClientOptions = z.object({
-  url: z.string().url('Elasticsearch URL 必须为合法 URL'),
+  url: z.string().url('Elasticsearch URL 必须为合法 URL').optional(),
   username: z.string().min(1).max(255).optional(),
   password: z.string().max(500).optional(),
   timeoutMs: z.number().int().min(1000).max(30000).optional(),
@@ -543,6 +544,13 @@ const elasticsearchClientOptions = z.object({
 
 export const elasticsearchSchemas = {
   test: elasticsearchClientOptions,
+  // 连接配置持久化：undefined=不修改，''=删除该项（凭据字段保存后不回传）
+  saveConfig: z.object({
+    url: z.string().max(500).optional(),
+    username: z.string().max(255).optional(),
+    password: z.string().max(500).optional(),
+    timeoutMs: z.union([z.number().int().min(1000).max(120000), z.string().max(10)]).optional(),
+  }),
   search: elasticsearchClientOptions.extend({
     index: z.string().min(1).max(200).regex(/^[A-Za-z0-9._\-\*\+\,]+$/, '索引名包含非法字符'),
     queryString: z.string().max(2000).optional(),
