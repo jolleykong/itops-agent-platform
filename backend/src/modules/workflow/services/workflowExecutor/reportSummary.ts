@@ -277,6 +277,47 @@ const SEVERITY_META: Record<Severity, { icon: string; title: string }> = {
   info: { icon: '🟡', title: '提示' },
 };
 
+// 几千台规模下 findings 可能上万条，聚合展示时每类最多列出这么多对象名
+const MAX_TARGETS_PER_LINE = 6;
+const MAX_DETAIL_VARIANTS = 3;
+
+/**
+ * 按检查项聚合一组 finding（容量基准：几千台 → 单级 findings 上限数万条，
+ * 逐条列出会淹没报告；统一聚合为「检查项（N 台）：对象清单截断」格式）。
+ */
+function formatAggregatedGroup(
+  group: Finding[],
+  push: (line: string) => void
+): void {
+  const byItem = new Map<string, { advice: string; targets: string[]; details: Map<string, number> }>();
+  for (const f of group) {
+    if (!byItem.has(f.item)) byItem.set(f.item, { advice: f.advice, targets: [], details: new Map() });
+    const agg = byItem.get(f.item)!;
+    agg.targets.push(f.target);
+    agg.details.set(f.detail, (agg.details.get(f.detail) || 0) + 1);
+  }
+
+  for (const [item, agg] of byItem) {
+    const uniqTargets = [...new Set(agg.targets)];
+    const shown = uniqTargets.slice(0, MAX_TARGETS_PER_LINE).join('、');
+    const more = uniqTargets.length > MAX_TARGETS_PER_LINE ? ` 等 ${uniqTargets.length} 台` : '';
+    push(`- **${item}**（${uniqTargets.length} 台）：${shown}${more}`);
+
+    // 原因分布：全部一致且非默认文案 → 显示一条；有差异 → 显示 top 几种
+    const distinct = [...agg.details.entries()]
+      .filter(([d]) => d && d !== '检查失败')
+      .sort((a, b) => b[1] - a[1]);
+    if (distinct.length === 1) {
+      push(`  - 原因：${distinct[0][0]}`);
+    } else if (distinct.length > 1) {
+      const parts = distinct.slice(0, MAX_DETAIL_VARIANTS).map(([d, n]) => `${d}（${n} 台）`);
+      const mored = distinct.length > MAX_DETAIL_VARIANTS ? ` 等 ${distinct.length} 种` : '';
+      push(`  - 原因：${parts.join(' / ')}${mored}`);
+    }
+    push(`  - 建议：${agg.advice}`);
+  }
+}
+
 /**
  * 生成"汇总摘要"Markdown 区块（按重要程度排序的问题清单 + 总览统计）。
  */
@@ -324,32 +365,8 @@ export function buildSummarySection(result: SummaryResult): string {
     const meta = SEVERITY_META[severity];
     lines.push('');
     lines.push(`#### ${meta.icon} ${meta.title}（${group.length} 条）`);
-
-    if (severity === 'no_data') {
-      // 未取得数据按「检查项 + 原因」聚合展示，避免同类条目刷屏
-      const aggregated = new Map<string, { item: string; reason: string; advice: string; targets: string[] }>();
-      for (const f of group) {
-        const key = `${f.item}::${f.detail}`;
-        if (!aggregated.has(key)) aggregated.set(key, { item: f.item, reason: f.detail, advice: f.advice, targets: [] });
-        aggregated.get(key)!.targets.push(f.target);
-      }
-      for (const [, agg] of aggregated) {
-        const uniq = [...new Set(agg.targets)];
-        const shown = uniq.slice(0, 6).join('、');
-        const more = uniq.length > 6 ? ` 等 ${uniq.length} 台` : '';
-        lines.push(`- **${agg.item}**（${uniq.length} 台）：${shown}${more}`);
-        if (agg.reason && agg.reason !== '检查失败') {
-          lines.push(`  - 原因：${agg.reason}`);
-        }
-        lines.push(`  - 建议：${agg.advice}`);
-      }
-      continue;
-    }
-
-    for (const f of group) {
-      lines.push(`- **${f.target}** — ${f.item}：${f.detail}`);
-      lines.push(`  - 建议：${f.advice}`);
-    }
+    // 统一按检查项聚合：几千台规模下单级 findings 可达数万条，逐条列出不可用
+    formatAggregatedGroup(group, (line) => lines.push(line));
   }
 
   return lines.join('\n');

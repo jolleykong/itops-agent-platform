@@ -158,7 +158,10 @@ async function runComplianceCheckCommon(
   logger.info(`⚡ [Compliance Check] 所有检查执行完成，耗时: ${commandDuration}ms，完成 ${Object.keys(results).length} 项`);
 
   // 第二步：批量 AI 分析（一次 LLM 调用）
-  if (useAI) {
+  // 规模化前置过滤（容量基准：几千台，2026-11-19）：全通过的服务器不调 LLM，
+  // 用规则化结论占位。5000 台全量调用 = 5000 次 LLM/轮，其中绝大多数是正常机。
+  const hasFailures = Object.values(results).some((r) => !r.success);
+  if (useAI && hasFailures) {
     const aiStartTime = Date.now();
     const analysisResults = await analyzeAllComplianceChecks(results);
 
@@ -170,7 +173,12 @@ async function runComplianceCheckCommon(
     }
 
     const aiDuration = Date.now() - aiStartTime;
-    logger.info(`🤖 [Compliance Check] AI 分析完成，耗时: ${aiDuration}ms`);
+    logger.info(`🤖 [Compliance Check] AI 分析完成（存在失败项），耗时: ${aiDuration}ms`);
+  } else if (useAI && !hasFailures) {
+    for (const r of Object.values(results)) {
+      r.aiAnalysis = '全部检查项通过，无异常。';
+    }
+    logger.info('✅ [Compliance Check] 全部通过，跳过 AI 分析（前置过滤）');
   }
 
   if (options.saveResults) {

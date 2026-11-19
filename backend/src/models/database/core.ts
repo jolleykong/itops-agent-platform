@@ -12,6 +12,24 @@ export { setIOInstance, getIOInstance } from '../../shared/websocket/io';
 let dbInstance: Database.Database | null = null;
 let isInitialized = false;
 
+/**
+ * 数据库驱动选择（P1 双驱动切换入口，2026-11-19 容量基准：几千台节点）：
+ * - sqlite（默认）：开发/测试/预览环境，同步 better-sqlite3，零部署成本
+ * - pg：生产规模化目标驱动（PostgreSQL），通过 DB_URL 配置连接串
+ *
+ * 当前状态：repository 层 842 处 db.prepare 均为同步调用（better-sqlite3 API），
+ * 切换 PG 需先完成 repository 层异步化收口（见 docs/pg-migration-design.md）。
+ * 在此之前配置 pg 会在启动时明确报错，避免静默走错驱动。
+ */
+function resolveDriver(): 'sqlite' | 'pg' {
+  const driver = (process.env.DB_DRIVER || 'sqlite').toLowerCase();
+  if (driver !== 'sqlite' && driver !== 'pg') {
+    logger.warn(`⚠️ 未知 DB_DRIVER="${driver}"，回退为 sqlite`);
+    return 'sqlite';
+  }
+  return driver as 'sqlite' | 'pg';
+}
+
 function createDatabaseInstance(dbPath: string): Database.Database {
   const dbDir = path.dirname(dbPath);
   
@@ -104,6 +122,16 @@ export async function initializeDatabase(): Promise<void> {
     logger.info('Database already initialized, skipping');
     return;
   }
+
+  // P1 双驱动入口：PG 切换需先完成 repository 层异步化（docs/pg-migration-design.md）
+  const driver = resolveDriver();
+  if (driver === 'pg') {
+    throw new Error(
+      '[DB_DRIVER=pg] PostgreSQL 驱动尚未启用：repository 层仍为 better-sqlite3 同步 API，' +
+      '需先完成异步化收口改造（见 docs/pg-migration-design.md）。当前请使用 DB_DRIVER=sqlite。'
+    );
+  }
+  logger.info(`🗄️ Database driver: ${driver}`);
 
   dbInstance = createDatabaseInstance(env.DATABASE_PATH);
   isInitialized = true;
