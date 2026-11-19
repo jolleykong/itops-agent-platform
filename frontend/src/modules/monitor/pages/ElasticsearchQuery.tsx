@@ -37,6 +37,20 @@ interface SearchResponse {
 
 const LEVELS = ['error', 'critical', 'warn', 'fatal', 'info', 'debug', 'trace'] as const;
 
+/**
+ * 响应归一：api 实例的响应拦截器已把 { success, data } 信封解包为内层 data，
+ * 但 success=false（HTTP 2xx 特例）或旧结构时 data 可能仍是信封——两种形态都兼容。
+ */
+function asPayload<T>(data: unknown): T | null {
+  if (data && typeof data === 'object' && 'success' in (data as Record<string, unknown>)) {
+    const env = data as { success: boolean; data?: T; error?: string };
+    if (env.success) return (env.data ?? null) as T | null;
+    // 信封失败分支：交给 catch/错误提示路径，此处以 null 表示失败
+    throw new Error(env.error || '请求失败');
+  }
+  return (data ?? null) as T | null;
+}
+
 const RANGE_OPTIONS = [
   { label: '1 小时', value: 1 },
   { label: '6 小时', value: 6 },
@@ -96,17 +110,17 @@ export default function ElasticsearchQuery() {
     setTesting(true);
     try {
       const { data } = await api.post('/monitor/elasticsearch/test', buildAuthPayload());
-      const payload = data as { success: boolean; data?: { totalDocs: number; indexFamilies: number }; error?: string };
-      if (payload.success && payload.data) {
-        message.success(`连接成功：${payload.data.indexFamilies} 个索引族，可读文档 ${payload.data.totalDocs.toLocaleString()} 条`);
+      const payload = asPayload<{ totalDocs: number; indexFamilies: number }>(data);
+      if (payload) {
+        message.success(`连接成功：${payload.indexFamilies} 个索引族，可读文档 ${payload.totalDocs.toLocaleString()} 条`);
         // 顺带拉取索引族列表供选择
         const { data: idxData } = await api.post('/monitor/elasticsearch/indices', buildAuthPayload());
-        const idxPayload = idxData as { success: boolean; data?: IndexFamily[]; error?: string };
-        if (idxPayload.success && idxPayload.data) {
-          setFamilies(idxPayload.data);
+        const families = asPayload<IndexFamily[]>(idxData);
+        if (families) {
+          setFamilies(families);
         }
       } else {
-        message.error(payload.error || '连接失败');
+        message.error('连接失败');
       }
     } catch (err) {
       const msg = getAxiosErrorMessage(err, '连接失败');
@@ -120,12 +134,12 @@ export default function ElasticsearchQuery() {
   const handleLoadFamilies = async () => {
     try {
       const { data } = await api.post('/monitor/elasticsearch/indices', buildAuthPayload());
-      const payload = data as { success: boolean; data?: IndexFamily[]; error?: string };
-      if (payload.success && payload.data) {
-        setFamilies(payload.data);
-        message.success(`已加载 ${payload.data.length} 个索引族`);
+      const families = asPayload<IndexFamily[]>(data);
+      if (families) {
+        setFamilies(families);
+        message.success(`已加载 ${families.length} 个索引族`);
       } else {
-        message.error(payload.error || '索引族枚举失败');
+        message.error('索引族枚举失败');
       }
     } catch (err) {
       message.error(getAxiosErrorMessage(err, '索引族枚举失败'));
@@ -159,17 +173,13 @@ export default function ElasticsearchQuery() {
           index: index.trim(),
           dsl,
         });
-        const payload = data as {
-          success: boolean;
-          data?: { hits?: { hits?: Array<{ _source: Record<string, unknown> }> }; took?: number };
-          error?: string;
-        };
-        if (payload.success && payload.data) {
-          const hits = (payload.data.hits?.hits ?? []).map((h) => h._source);
+        const payload = asPayload<{ hits?: { hits?: Array<{ _source: Record<string, unknown> }> }; took?: number }>(data);
+        if (payload) {
+          const hits = (payload.hits?.hits ?? []).map((h) => h._source);
           setRawResult(hits);
-          message.success(`查询成功，共 ${hits.length} 条（耗时 ${payload.data.took ?? '?'}ms）`);
+          message.success(`查询成功，共 ${hits.length} 条（耗时 ${payload.took ?? '?'}ms）`);
         } else {
-          message.error(payload.error || '查询失败');
+          message.error('查询失败');
         }
       } else {
         const { data } = await api.post('/monitor/elasticsearch/search', {
@@ -183,12 +193,12 @@ export default function ElasticsearchQuery() {
           size: parseInt(size, 10) || 50,
           groupBy,
         });
-        const payload = data as { success: boolean; data?: SearchResponse; error?: string };
-        if (payload.success && payload.data) {
-          setResult(payload.data);
-          message.success(`查询成功，命中 ${payload.data.total.toLocaleString()} 条（耗时 ${payload.data.tookMs}ms）`);
+        const payload = asPayload<SearchResponse>(data);
+        if (payload) {
+          setResult(payload);
+          message.success(`查询成功，命中 ${payload.total.toLocaleString()} 条（耗时 ${payload.tookMs}ms）`);
         } else {
-          message.error(payload.error || '查询失败');
+          message.error('查询失败');
         }
       }
     } catch (err) {
