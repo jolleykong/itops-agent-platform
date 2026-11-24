@@ -10,8 +10,11 @@ interface DashboardOverlayProps {
   isReal: boolean;
   searchQuery: string;
   viewMode: ViewMode;
+  /** 3D 模式开关状态（默认关闭，纯 2D 平面视图） */
+  threeDEnabled: boolean;
   onSearchChange: (q: string) => void;
   onViewModeChange: (mode: ViewMode) => void;
+  onToggle3D: () => void;
   onNavigateDC: () => void;
 }
 
@@ -23,8 +26,10 @@ export default function DashboardOverlay({
   isReal,
   searchQuery,
   viewMode,
+  threeDEnabled,
   onSearchChange,
   onViewModeChange,
+  onToggle3D,
   onNavigateDC,
 }: DashboardOverlayProps) {
   const summary: OverviewSummary = overview?.summary || {
@@ -166,9 +171,9 @@ export default function DashboardOverlay({
         </div>
       </div>
 
-      {/* ── 场景控制按钮 ── */}
-      <div className="absolute bottom-20 left-1/2 -translate-x-1/2 z-20 flex gap-2 px-1.5 py-1 rounded-full bg-[rgba(8,16,32,0.85)] border border-[rgba(0,245,255,0.15)] backdrop-blur-xl">
-        {viewModes.map((v) => (
+      {/* ── 场景控制条：3D 模式开关（常驻）+ 视角切换（仅 3D 开启时） ── */}
+      <div className="absolute bottom-20 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 px-2 py-1 rounded-full bg-[rgba(8,16,32,0.85)] border border-[rgba(0,245,255,0.15)] backdrop-blur-xl">
+        {threeDEnabled && viewModes.map((v) => (
           <button
             key={v.key}
             onClick={() => onViewModeChange(v.key)}
@@ -180,6 +185,30 @@ export default function DashboardOverlay({
             {v.label}
           </button>
         ))}
+        <button
+          onClick={onToggle3D}
+          title={threeDEnabled ? '切换到 2D 平面视图（更省资源）' : '开启 3D 立体场景'}
+          className="flex items-center gap-2 px-3 py-1.5 rounded-full transition-all hover:bg-[rgba(0,245,255,0.08)]"
+        >
+          <span className={`text-xs font-medium tracking-[0.5px] ${threeDEnabled ? 'text-[#00f5ff]' : 'text-[#5a7a94]'}`}>
+            3D 模式
+          </span>
+          <span
+            className="relative inline-block w-9 h-5 rounded-full transition-all duration-200"
+            style={{
+              background: threeDEnabled ? 'rgba(0,245,255,0.35)' : 'rgba(255,255,255,0.12)',
+              boxShadow: threeDEnabled ? '0 0 8px rgba(0,245,255,0.3)' : 'none',
+            }}
+          >
+            <span
+              className="absolute top-0.5 w-4 h-4 rounded-full transition-all duration-200"
+              style={{
+                left: threeDEnabled ? 18 : 2,
+                background: threeDEnabled ? '#00f5ff' : '#8aa0b5',
+              }}
+            />
+          </span>
+        </button>
       </div>
 
       {/* ── 底部告警条 ── */}

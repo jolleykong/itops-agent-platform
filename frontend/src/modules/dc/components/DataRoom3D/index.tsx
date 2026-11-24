@@ -1,10 +1,24 @@
-import { useState, useCallback, useMemo, useEffect } from 'react';
+import { useState, useCallback, useMemo, useEffect, lazy, Suspense } from 'react';
 import { useNavigate } from 'react-router-dom';
-import Scene from './Scene';
-import type { ViewMode } from './Scene';
 import DashboardOverlay from './DashboardOverlay';
 import RackFrontView from './RackFrontView';
+import Room2DView from './Room2DView';
 import useDataRoom from './useDataRoom';
+import type { ViewMode } from './Scene';
+
+// 3D 场景懒加载：默认纯 2D 模式下不加载 three.js（省体积也省 GPU）
+const Scene = lazy(() => import('./Scene'));
+
+/** 3D 模式开关的 localStorage 持久化键（默认关闭） */
+const LS_KEY_3D = 'dc:3d-enabled';
+
+function read3DEnabled(): boolean {
+  try {
+    return window.localStorage.getItem(LS_KEY_3D) === '1';
+  } catch {
+    return false;
+  }
+}
 
 export default function DataRoom3D() {
   const navigate = useNavigate();
@@ -27,6 +41,20 @@ export default function DataRoom3D() {
   const [hoveredRackId, setHoveredRackId] = useState<string | null>(null);
   const [timeStr, setTimeStr] = useState('');
   const [viewMode, setViewMode] = useState<ViewMode>('overview');
+  // 3D 模式开关：默认关闭（纯 2D 平面视图），开启后挂载 Three.js 场景；偏好持久化
+  const [threeDEnabled, setThreeDEnabled] = useState<boolean>(read3DEnabled);
+
+  const handleToggle3D = useCallback(() => {
+    setThreeDEnabled(prev => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem(LS_KEY_3D, next ? '1' : '0');
+      } catch {
+        // localStorage 不可用时仅内存态生效
+      }
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     const update = () => {
@@ -122,15 +150,27 @@ export default function DataRoom3D() {
           margin: '8px',
           boxShadow: '0 4px 20px rgba(0,0,0,0.5), inset 0 0 30px rgba(0,212,255,0.03)',
         }}>
-        <Scene
-          racks={filteredRacks}
-          onRackClick={handleRackClick}
-          selectedRackId={selectedRack?.id || null}
-          hoveredRackId={hoveredRackId}
-          onHoverChange={handleHoverChange}
-          heatmapData={heatmapData}
-          viewMode={viewMode}
-        />
+        {threeDEnabled ? (
+          <Suspense fallback={null}>
+            <Scene
+              racks={filteredRacks}
+              onRackClick={handleRackClick}
+              selectedRackId={selectedRack?.id || null}
+              hoveredRackId={hoveredRackId}
+              onHoverChange={handleHoverChange}
+              heatmapData={heatmapData}
+              viewMode={viewMode}
+            />
+          </Suspense>
+        ) : (
+          <Room2DView
+            racks={filteredRacks}
+            onRackClick={handleRackClick}
+            selectedRackId={selectedRack?.id || null}
+            hoveredRackId={hoveredRackId}
+            onHoverChange={handleHoverChange}
+          />
+        )}
       </div>
 
       <DashboardOverlay
@@ -142,8 +182,10 @@ export default function DataRoom3D() {
         isReal={isReal}
         searchQuery={searchQuery}
         viewMode={viewMode}
+        threeDEnabled={threeDEnabled}
         onSearchChange={setSearchQuery}
         onViewModeChange={setViewMode}
+        onToggle3D={handleToggle3D}
         onNavigateDC={handleNavigateDC}
       />
 
