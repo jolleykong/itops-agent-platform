@@ -128,6 +128,8 @@ export interface ServerUpsertResult {
  *   managementip_name → ip_address（管理 IP，优先）
  *   svrbizip_name     → 备用（业务 IP，managementip 为空时用）
  *   osfamily_name     → os
+ *   brand/model/serial → description 资产行（「品牌: x；型号: y；SN: z」），
+ *                        servers 表无独立资产列，落 description；iTop description 兜底
  */
 export function upsertServer(
   existingId: string | undefined,
@@ -136,24 +138,39 @@ export function upsertServer(
     managementip_name?: string;
     svrbizip_name?: string;
     osfamily_name?: string;
+    description?: string;
+    serialnumber?: string;
+    model_name?: string;
+    brand_name?: string;
   },
 ): ServerUpsertResult {
   const ip = fields.managementip_name || fields.svrbizip_name || '';
 
+  // 资产行：iTop 有品牌/型号/SN（BMC FRU 补齐成果）则组合；否则沿用 iTop description
+  const assetParts: string[] = [];
+  if (fields.brand_name) assetParts.push(`品牌: ${fields.brand_name}`);
+  if (fields.model_name) assetParts.push(`型号: ${fields.model_name}`);
+  if (fields.serialnumber) assetParts.push(`SN: ${fields.serialnumber}`);
+  const desc = assetParts.length > 0
+    ? [assetParts.join('；'), fields.description].filter(Boolean).join('；')
+    : (fields.description ?? '');
+
   if (existingId) {
     db.prepare(`
       UPDATE servers
-      SET name = ?, os = ?, hostname = COALESCE(NULLIF(?, ''), hostname), ip_address = ?, updated_at = datetime('now','localtime')
+      SET name = ?, os = ?, hostname = COALESCE(NULLIF(?, ''), hostname), ip_address = ?,
+          description = CASE WHEN ? != '' THEN ? ELSE description END,
+          updated_at = datetime('now','localtime')
       WHERE id = ?
-    `).run(fields.name, fields.osfamily_name ?? '', ip, ip || null, existingId);
+    `).run(fields.name, fields.osfamily_name ?? '', ip, ip || null, desc, desc, existingId);
     return { id: existingId, action: 'update' };
   }
 
   const newId = crypto.randomUUID();
   db.prepare(`
-    INSERT INTO servers (id, name, hostname, port, username, password, use_ssh_key, os, os_type, ip_address, enabled, tags, created_at, updated_at)
-    VALUES (?, ?, ?, 22, '', NULL, 0, ?, 'linux', ?, 1, '[]', datetime('now','localtime'), datetime('now','localtime'))
-  `).run(newId, fields.name, ip || fields.name, fields.osfamily_name ?? '', ip || null);
+    INSERT INTO servers (id, name, hostname, port, username, password, use_ssh_key, os, os_type, ip_address, description, enabled, tags, created_at, updated_at)
+    VALUES (?, ?, ?, 22, '', NULL, 0, ?, 'linux', ?, ?, 1, '[]', datetime('now','localtime'), datetime('now','localtime'))
+  `).run(newId, fields.name, ip || fields.name, fields.osfamily_name ?? '', ip || null, desc);
 
   return {
     id: newId,
@@ -174,13 +191,31 @@ export interface DeviceUpsertResult {
 }
 
 /**
+ * network_devices.device_type 的 CHECK 枚举映射（v009_network_complete_coverage）：
+ * iTop NetworkDeviceType 名称 / finalclass → 平台枚举值
+ */
+function mapNetworkDeviceType(iTopTypeName?: string, finalClass?: string): string {
+  const s = `${iTopTypeName ?? ''} ${finalClass ?? ''}`.toLowerCase();
+  if (/switch|交换/.test(s)) return 'switch';
+  if (/firewall|防火/.test(s)) return 'firewall';
+  if (/router|路由/.test(s)) return 'router';
+  if (/load.?balanc|负载/.test(s)) return 'loadbalancer';
+  if (/wlc|无线控制/.test(s)) return 'wlc';
+  if (/\bap\b|接入点/.test(s)) return 'ap';
+  if (/gateway|网关/.test(s)) return 'gateway';
+  return 'unknown';
+}
+
+/**
  * 根据 finalclass 分流：
  *   pdu / ups 类 → dc_pdus
  *   其他（switch / router / firewall 等）→ network_devices（要求唯一 IP）
  *
  * iTop 字段映射：
- *   managementip_name → ip_address（管理 IP）
- *   finalclass        → 设备类型判断（NetworkDevice / PDU / UPS ...）
+ *   managementip_name     → ip_address（管理 IP）
+ *   finalclass            → 设备类型判断（NetworkDevice / PDU / UPS ...）
+ *   networkdevicetype_id_friendlyname → device_type 枚举映射（Switch/Firewall/Router...）
+ *   brand_name / model_name → vendor / model（台账导入的设备这些字段常为空，空值不覆盖）
  */
 export function upsertDatacenterDevice(
   existingId: string | undefined,
@@ -189,29 +224,38 @@ export function upsertDatacenterDevice(
     description?: string;
     managementip_name?: string;
     finalclass?: string;
+    networkdevicetype_id_friendlyname?: string;
+    serialnumber?: string;
+    model_name?: string;
+    brand_name?: string;
   },
 ): DeviceUpsertResult {
   // IP 兜底：台账导入的设备 name 即管理 IP（iTop 里 managementip 未关联 → managementip_name 为空）
   const ip = fields.managementip_name || (/^\d{1,3}(\.\d{1,3}){3}$/.test(fields.name.trim()) ? fields.name.trim() : '');
   const finalClass = (fields.finalclass ?? '').toLowerCase();
   const isPDU = finalClass.includes('pdu') || finalClass.includes('ups');
+  const deviceType = mapNetworkDeviceType(fields.networkdevicetype_id_friendlyname, fields.finalclass);
 
   if (isPDU) {
+    const pduType = finalClass.includes('ups') ? 'ups' : 'pdu';
+    const model = fields.model_name || fields.description || '';
     if (existingId) {
       db.prepare(`
-        UPDATE dc_pdus SET name = ?, updated_at = datetime('now','localtime')
+        UPDATE dc_pdus SET name = ?, type = COALESCE(NULLIF(?, ''), type),
+          model = CASE WHEN ? != '' THEN ? ELSE model END,
+          updated_at = datetime('now','localtime')
         WHERE id = ?
-      `).run(fields.name, existingId);
+      `).run(fields.name, pduType, model, model, existingId);
       return { id: existingId, action: 'update', table: 'dc_pdus' };
     }
     const newId = crypto.randomUUID();
     pdusRepo.create({
       id: newId,
       name: fields.name,
-      type: 'pdu',
+      type: pduType,
       status: 'active',
       ip_address: ip,
-      model: fields.description ?? '',
+      model,
     });
     return { id: newId, action: 'create', table: 'dc_pdus' };
   }
@@ -221,9 +265,13 @@ export function upsertDatacenterDevice(
   // 无 IP 的设备必须跳过；IP 冲突时关联到已有记录。
   if (existingId) {
     db.prepare(`
-      UPDATE network_devices SET name = ?, updated_at = datetime('now','localtime')
+      UPDATE network_devices SET name = ?,
+        device_type = CASE WHEN ? != 'unknown' THEN ? ELSE device_type END,
+        vendor = CASE WHEN ? != '' THEN ? ELSE vendor END,
+        model = COALESCE(NULLIF(?, ''), model),
+        updated_at = datetime('now','localtime')
       WHERE id = ?
-    `).run(fields.name, existingId);
+    `).run(fields.name, deviceType, deviceType, fields.brand_name ?? '', fields.brand_name ?? '', fields.model_name ?? '', existingId);
     return { id: existingId, action: 'update', table: 'network_devices' };
   }
 
@@ -251,9 +299,9 @@ export function upsertDatacenterDevice(
 
   const newId = crypto.randomUUID();
   db.prepare(`
-    INSERT INTO network_devices (id, name, ip_address, vendor, device_type, status, snmp_enabled, created_at, updated_at)
-    VALUES (?, ?, ?, 'unknown', 'unknown', 'online', 1, datetime('now','localtime'), datetime('now','localtime'))
-  `).run(newId, fields.name, ip);
+    INSERT INTO network_devices (id, name, ip_address, vendor, model, device_type, status, snmp_enabled, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, 'online', 1, datetime('now','localtime'), datetime('now','localtime'))
+  `).run(newId, fields.name, ip, fields.brand_name || 'unknown', fields.model_name ?? '', deviceType);
   return { id: newId, action: 'create', table: 'network_devices' };
 }
 
@@ -301,14 +349,18 @@ export function findRackPlatformId(itopRackId: string): string | null {
   return idMap[String(itopRackId)] ?? null;
 }
 
-/** 在机柜内找首个可容纳 needU 个连续 U 位的起始位；满则 null */
-function findFreeStartU(rackId: string, needU: number): number | null {
+/** 机柜 total_u（iTop nb_u 常为空，容错回 42U 标准柜） */
+function rackTotalU(rackId: string): number {
   const rack = db.prepare('SELECT total_u FROM dc_racks WHERE id = ?').get(rackId) as
     | { total_u: number }
     | undefined;
-  // iTop 机柜 nb_u 常为空 → REST 返回 '' → total_u 存成空串；容量必须容错回 42U
-  const rackTotal = Number(rack?.total_u);
-  const totalU = Number.isFinite(rackTotal) && rackTotal > 0 ? rackTotal : 42;
+  const totalU = Number(rack?.total_u);
+  return Number.isFinite(totalU) && totalU > 0 ? totalU : 42;
+}
+
+/** 在机柜内找首个可容纳 needU 个连续 U 位的起始位；满则 null */
+function findFreeStartU(rackId: string, needU: number): number | null {
+  const totalU = rackTotalU(rackId);
   const rows = db
     .prepare('SELECT start_u, end_u FROM dc_rack_slots WHERE rack_id = ?')
     .all(rackId) as { start_u: number; end_u: number }[];
@@ -329,14 +381,23 @@ function findFreeStartU(rackId: string, needU: number): number | null {
   return null;
 }
 
-/** 指定 U 位是否被该机柜内其他槽位占用 */
-function isUOccupied(rackId: string, u: number, excludeSlotId?: string): boolean {
-  const row = db
-    .prepare(
-      'SELECT id FROM dc_rack_slots WHERE rack_id = ? AND start_u <= ? AND end_u >= ? AND id != COALESCE(?, \'\') LIMIT 1',
-    )
-    .get(rackId, u, u, excludeSlotId ?? null);
-  return row !== undefined;
+/** 指定 U 位区间 [startU, endU] 是否被该机柜内其他槽位占用 */
+function isSpanOccupied(rackId: string, startU: number, endU: number, excludeSlotId?: string): boolean {
+  const rows = db
+    .prepare('SELECT start_u, end_u FROM dc_rack_slots WHERE rack_id = ? AND id != COALESCE(?, \'\')')
+    .all(rackId, excludeSlotId ?? null) as { start_u: number; end_u: number }[];
+  return rows.some((r) => r.start_u <= endU && r.end_u >= startU);
+}
+
+/**
+ * 设备默认高度（U）：sync 落槽位时按类型展开 U 位区间。
+ * 台账只登记「起始 U 位」（区间第一个 U），高度按类型默认：
+ *   - 服务器 2U
+ *   - 网络设备 / PDU / UPS 1U
+ *   - 存储等无 IP 占位设备（'other'）不假设高度 → 留空，仅记起始 U（1U 占位渲染）
+ */
+function deviceHeightU(deviceType: 'server' | 'network_device' | 'pdu' | 'ups' | 'other'): number {
+  return deviceType === 'server' ? 2 : 1;
 }
 
 export interface SlotSyncResult {
@@ -350,8 +411,9 @@ export interface SlotSyncResult {
  * 规则：
  *   - iTop 无机柜关联且平台已有槽位 → 摘除槽位（解除挂柜，iTop 是唯一事实源）
  *   - 设备未落库（platformId 空）且无槽位 → skip
- *   - 已有槽位：同柜不动；换柜时保留原 U 位（冲突则重新占位）
- *   - 无槽位：台账 U 位可用则落台账 U（冲突顺延），否则自动占首个空闲 U
+ *   - 已有槽位：同柜时先对齐台账起始 U（区间空闲才移动），再按类型默认高度校准 end_u；换柜保留台账起始 U
+ *   - 无槽位：台账起始 U + 类型高度可用则直落（区间冲突顺延），否则自动占首个空闲区间
+ *   - 高度口径：server=2U，network_device/pdu/ups=1U，other（存储等）留空仅记起始 U
  *
  * @param deviceId   平台设备 id（servers.id / network_devices.id / dc_pdus.id / 占位=设备名）
  * @param deviceType dc_rack_slots.device_type：'server' | 'network_device' | 'pdu' | 'ups' | 'other'
@@ -380,17 +442,58 @@ export function syncDeviceSlot(
     return { action: 'skip', message: deviceId ? '机柜未关联，跳过挂柜' : '设备未落库，跳过挂柜' };
   }
 
-  // ── 已有槽位：处理换柜 ──
+  const needU = deviceHeightU(deviceType);
+
+  // ── 已有槽位：台账 U 对齐 / 高度校准 / 换柜 ──
   if (existing) {
+    const descU = parseUPosition(description);
+
     if (existing.rack_id === rackId) {
-      return { action: 'skip', message: '挂柜关系未变化' };
-    }
-    const needU = existing.end_u - existing.start_u + 1;
-    if (!isUOccupied(rackId, existing.start_u, existing.id)) {
+      // 1) 台账起始 U 对齐（iTop 是唯一事实源）：目标区间空闲且在柜内才移动，被占则保持原位
+      let startU = existing.start_u;
+      let alignNote = '';
+      if (
+        descU !== null && descU !== existing.start_u &&
+        descU + needU - 1 <= rackTotalU(rackId) &&
+        !isSpanOccupied(rackId, descU, descU + needU - 1, existing.id)
+      ) {
+        startU = descU;
+        alignNote = needU > 1 ? `对齐台账 U${descU}-${descU + needU - 1}（${needU}U）` : `对齐台账 U${descU}`;
+      }
+      const spanEnd = startU + needU - 1;
+      if (startU === existing.start_u && existing.end_u === spanEnd) {
+        return {
+          action: 'skip',
+          message: descU !== null && descU !== existing.start_u
+            ? '挂柜关系未变化（台账 U 区间被占，保持原位）'
+            : '挂柜关系未变化',
+        };
+      }
+      if (!isSpanOccupied(rackId, startU, spanEnd, existing.id)) {
+        db.prepare(
+          "UPDATE dc_rack_slots SET start_u = ?, end_u = ?, updated_at = datetime('now','localtime') WHERE id = ?",
+        ).run(startU, spanEnd, existing.id);
+        return {
+          action: 'update',
+          message: alignNote || `高度按类型默认校准为 U${startU}-${spanEnd}（${needU}U）`,
+        };
+      }
+      // 2) 高度扩展冲突 → 重新占位
+      const free = findFreeStartU(rackId, needU);
+      if (free === null) return { action: 'skip', message: '高度校准失败：机柜无空闲连续 U 位，保持原槽位' };
       db.prepare(
-        "UPDATE dc_rack_slots SET rack_id = ?, updated_at = datetime('now','localtime') WHERE id = ?",
-      ).run(rackId, existing.id);
-      return { action: 'update', message: `换柜，保留 U${existing.start_u}-${existing.end_u}` };
+        "UPDATE dc_rack_slots SET start_u = ?, end_u = ?, updated_at = datetime('now','localtime') WHERE id = ?",
+      ).run(free, free + needU - 1, existing.id);
+      return { action: 'update', message: `高度校准冲突，重新占位 U${free}-${free + needU - 1}` };
+    }
+
+    // 3) 换柜：优先保留台账起始 U 并按类型高度展开，冲突/超容则重新占位
+    const keepEnd = existing.start_u + needU - 1;
+    if (keepEnd <= rackTotalU(rackId) && !isSpanOccupied(rackId, existing.start_u, keepEnd, existing.id)) {
+      db.prepare(
+        "UPDATE dc_rack_slots SET rack_id = ?, end_u = ?, updated_at = datetime('now','localtime') WHERE id = ?",
+      ).run(rackId, keepEnd, existing.id);
+      return { action: 'update', message: `换柜，保留 U${existing.start_u}-${keepEnd}` };
     }
     const free = findFreeStartU(rackId, needU);
     if (free === null) {
@@ -402,23 +505,27 @@ export function syncDeviceSlot(
     return { action: 'update', message: `换柜，占 U${free}-${free + needU - 1}` };
   }
 
-  // ── 新挂柜 ──
+  // ── 新挂柜：台账起始 U + 类型高度，区间冲突顺延 ──
   const descU = parseUPosition(description);
   let startU: number | null = null;
   let note = '';
-  if (descU !== null && !isUOccupied(rackId, descU)) {
+  if (descU !== null && descU + needU - 1 <= rackTotalU(rackId) && !isSpanOccupied(rackId, descU, descU + needU - 1)) {
     startU = descU;
-    note = `台账 U${descU}`;
+    note = needU > 1 ? `台账 U${descU}-${descU + needU - 1}（${needU}U）` : `台账 U${descU}`;
   }
   if (startU === null) {
-    const free = findFreeStartU(rackId, 1);
+    const free = findFreeStartU(rackId, needU);
     if (free === null) return { action: 'skip', message: '机柜无空闲 U 位，跳过挂柜' };
     startU = free;
-    note = descU !== null ? `台账 U${descU} 冲突，自动占位` : '自动占位';
+    note = descU !== null ? `台账 U${descU} 区间冲突，自动占位` : '自动占位';
   }
+  const endU = startU + needU - 1;
   db.prepare(
     `INSERT INTO dc_rack_slots (id, rack_id, device_id, device_type, start_u, end_u, position_face, notes, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, 'front', ?, datetime('now','localtime'), datetime('now','localtime'))`,
-  ).run(crypto.randomUUID(), rackId, deviceId, deviceType, startU, startU, note);
-  return { action: 'create', message: `挂柜 U${startU}（${note}）` };
+  ).run(crypto.randomUUID(), rackId, deviceId, deviceType, startU, endU, note);
+  return {
+    action: 'create',
+    message: needU > 1 ? `挂柜 U${startU}-${endU}（${note}）` : `挂柜 U${startU}（${note}）`,
+  };
 }

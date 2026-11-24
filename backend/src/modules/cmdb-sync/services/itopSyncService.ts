@@ -48,6 +48,11 @@ interface ITopServer {
   osfamily_name?: string;
   /** iTop Rack 数字 id（Server extends DatacenterDevice，自带 rack_id 外键） */
   rack_id?: string;
+  /** 资产字段：BMC FRU 补齐成果（svr-MGMT 硬件层齐全；台账登记 CI 走导入时写入） */
+  description?: string;
+  serialnumber?: string;
+  model_name?: string;
+  brand_name?: string;
 }
 interface ITopRack {
   name: string;
@@ -68,6 +73,11 @@ interface ITopDatacenterDevice {
   finalclass?: string;
   /** iTop Rack 数字 id */
   rack_id?: string;
+  /** 资产字段（台账导入的设备多为空，空值不覆盖平台已有值） */
+  networkdevicetype_id_friendlyname?: string;
+  serialnumber?: string;
+  model_name?: string;
+  brand_name?: string;
 }
 
 /** 每个 CI 类型的同步策略（策略模式，消除 syncXxx 的重复骨架） */
@@ -266,11 +276,13 @@ const rackStrategy: SyncStrategy<ITopRack> = {
 const serverStrategy: SyncStrategy<ITopServer> = {
   ciType: 'Server',
   oql: 'SELECT Server',
-  outputFields: 'name, managementip_name, svrbizip_name, osfamily_name, organization_name, status, serialnumber, rack_id',
+  outputFields:
+    'name, managementip_name, svrbizip_name, osfamily_name, organization_name, status, serialnumber, rack_id, description, model_name, brand_name',
   upsert: (fields, { existingId }) => {
     const res = upsertServer(existingId, fields);
-    // 挂柜关系：rack_id 经 Rack idMap 解析后写 dc_rack_slots（无台账 U 位 → 自动占位）
-    const slot = syncDeviceSlot(res.id, 'server', fields.rack_id);
+    // 挂柜关系：rack_id 经 Rack idMap 解析后写 dc_rack_slots；
+    // description 携带台账「位置:Uxx」标注 → 台账起始 U 命中（缺失则自动占位）
+    const slot = syncDeviceSlot(res.id, 'server', fields.rack_id, fields.description);
     return {
       platformId: res.id,
       action: res.action,
@@ -285,7 +297,8 @@ const datacenterDeviceStrategy: SyncStrategy<ITopDatacenterDevice> = {
   // Server 是 DatacenterDevice 的子类：不过滤会把 1477 台 Server 重复拉进本轮
   // （按名字占位挂柜产生双份槽位）。排除后仅剩真正的机房设备（NetworkDevice/PDU/UPS/StorageSystem...）
   oql: "SELECT DatacenterDevice WHERE finalclass != 'Server'",
-  outputFields: 'name, description, managementip_name, finalclass, organization_name, serialnumber, rack_id',
+  outputFields:
+    'name, description, managementip_name, finalclass, organization_name, serialnumber, rack_id, networkdevicetype_id_friendlyname, model_name, brand_name',
   upsert: (fields, { existingId }) => {
     const res = upsertDatacenterDevice(existingId, fields);
     // 挂柜关系：U 位优先从 description 台账标注「位置：Uxx」解析
