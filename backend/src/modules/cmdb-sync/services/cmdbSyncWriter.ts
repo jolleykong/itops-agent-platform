@@ -50,6 +50,25 @@ export function upsertRoom(
 // ============================================================
 
 /**
+ * 机柜 3D 自动布局：同机房机柜按名称排序，每 6 台一排（间距 3.2m）
+ * 只对坐标仍为 (0,0) 的未布局机柜生效，不覆盖手动拖动过的位置
+ */
+function ensureRackLayout(roomId: string, rackId: string): void {
+  const rack = db.prepare('SELECT position_x, position_z FROM dc_racks WHERE id = ?').get(rackId) as
+    | { position_x: number; position_z: number }
+    | undefined;
+  if (!rack || (Number(rack.position_x) !== 0 || Number(rack.position_z) !== 0)) return;
+  const racks = db.prepare('SELECT id FROM dc_racks WHERE room_id = ? ORDER BY name').all(roomId) as { id: string }[];
+  const idx = racks.findIndex((r) => r.id === rackId);
+  if (idx < 0) return;
+  const row = Math.floor(idx / 6) + 1;
+  const col = idx % 6;
+  db.prepare(
+    "UPDATE dc_racks SET position_x = ?, position_z = ?, row_number = ?, updated_at = datetime('now','localtime') WHERE id = ?",
+  ).run(col * 3.2, row * 3.2, row, rackId);
+}
+
+/**
  * @returns { id, action } 新建或更新的平台 ID；若缺少 room_id 则 throw 以触发 skip
  */
 export function upsertRack(
@@ -73,6 +92,7 @@ export function upsertRack(
       UPDATE dc_racks SET name = ?, total_u = ?, room_id = COALESCE(?, room_id), updated_at = datetime('now','localtime')
       WHERE id = ?
     `).run(fields.name, totalU, roomId, existingId);
+    ensureRackLayout(roomId, existingId);
     return { id: existingId, action: 'update' };
   }
 
@@ -85,6 +105,7 @@ export function upsertRack(
     total_u: totalU,
   };
   racksRepo.create(input);
+  ensureRackLayout(roomId, newId);
   return { id: newId, action: 'create' };
 }
 
