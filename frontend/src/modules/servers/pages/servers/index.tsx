@@ -12,8 +12,16 @@ import { ServerComplianceOptionsModal } from './ServerComplianceOptionsModal';
 import { CommandHistorySection } from './CommandHistorySection';
 import { ComplianceHistorySection } from './ComplianceHistorySection';
 
-export default function Servers() {
-  const actions = useServerActions();
+export default function Servers({
+  category,
+  title,
+}: {
+  /** 资产分层：hardware=服务器设备 / os=操作系统管理 / storage=存储设备；不传=全量 */
+  category?: 'hardware' | 'os' | 'storage';
+  /** 页面标题（分层视图自定义，默认「服务器管理」） */
+  title?: string;
+} = {}) {
+  const actions = useServerActions(category);
 
   const {
     isModalOpen, setIsModalOpen,
@@ -88,6 +96,7 @@ export default function Servers() {
           selectedServer={selectedServer}
           activeTab={activeTab}
           setActiveTab={setActiveTab}
+          title={title}
         />
 
         {/* Tab 内容 */}

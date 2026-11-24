@@ -26,7 +26,9 @@ import { useServerActionsHandlers } from './handlers';
 // 转发类型导出，保持 `import type { ImportResult } from '../useServerActions'` 兼容
 export type { ApiError, ServerImportItem, ImportResult } from './types';
 
-export function useServerActions() {
+export function useServerActions(
+  category?: 'hardware' | 'os' | 'storage',
+) {
   const navigate = useNavigate();
   const toast = useToast();
 
@@ -40,6 +42,7 @@ export function useServerActions() {
     state.selectedGroupId,
     state.activeTab,
     state.sshKeySearchQuery,
+    category,
   );
 
   // 3. Mutations（依赖 state setters 与 queries 的 refetch）

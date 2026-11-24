@@ -37,6 +37,7 @@ export function useServerActionsQueries(
   selectedGroupId: string | null,
   activeTab: string,
   sshKeySearchQuery: string,
+  category?: 'hardware' | 'os' | 'storage',
 ): ServerActionsQueries {
   const { data: agents } = useQuery({
     queryKey: ['agents'],
@@ -71,9 +72,11 @@ export function useServerActionsQueries(
   });
 
   const { data: servers, isLoading } = useQuery({
-    queryKey: ['servers'],
+    queryKey: ['servers', category ?? 'all'],
     queryFn: async () => {
-      const { data } = await api.get('/servers');
+      const { data } = await api.get('/servers', {
+        params: category ? { category } : undefined,
+      });
       return data as Server[];
     },
   });

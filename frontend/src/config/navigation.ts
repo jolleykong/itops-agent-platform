@@ -86,8 +86,11 @@ export const navigationGroups: NavGroup[] = [
     icon: ServerCog,
     items: [
       { name: "nav.servers", href: "/servers", icon: Server },
+      // 资产分层（2026-11-24）：OS 层与存储设备从服务器列表分流
+      { name: "nav.osManagement", href: "/os-management", icon: Layers },
       { name: "nav.networkDevices", href: "/network-devices", icon: Network },
       { name: "nav.networks", href: "/networks", icon: Router },
+      { name: "nav.storageDevices", href: "/storage-devices", icon: HardDrive },
       { name: "nav.snmp", href: "/snmp", icon: Radio },
       { name: "nav.networkDiscovery", href: "/network-discovery", icon: Globe },
       { name: "nav.dbConnections", href: "/db-connections", icon: Database },

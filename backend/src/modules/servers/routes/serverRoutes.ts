@@ -5,15 +5,36 @@ import { validateBody, validateParams } from '../../../middleware/validation';
 import { serverSchemas } from '../../../shared/schemas/apiValidation';
 import { requireRole } from '../../../middleware/auth';
 import { serverCrudService } from '../services/serverCrudService';
+import { classifyServerAsset, type ServerAssetCategory } from '../services/serverAssetCategory';
 
 const router = Router();
 
-router.get('/', (_req: Request, res: Response) => {
+router.get('/', (req: Request, res: Response) => {
   try {
     const servers = serverCrudService.listServers();
+    // 资产分层过滤（可选）：?category=hardware|os|storage —— 数据不移动，仅视图分流
+    const category = req.query.category as ServerAssetCategory | undefined;
+    if (category && ['hardware', 'os', 'storage'].includes(category)) {
+      const filtered = servers.filter((s: { name: string; description?: string }) =>
+        classifyServerAsset(s.name, s.description) === category,
+      );
+      return res.json({ success: true, data: filtered });
+    }
     res.json({ success: true, data: servers });
   } catch {
     res.status(500).json({ success: false, error: 'Failed to get servers' });
+  }
+});
+
+/** 资产分层统计：三个视图的设备数（侧边栏徽标 / 页头统计用） */
+router.get('/asset-summary', (_req: Request, res: Response) => {
+  try {
+    const servers = serverCrudService.listServers() as Array<{ name: string; description?: string }>;
+    const summary = { hardware: 0, os: 0, storage: 0, total: servers.length };
+    for (const s of servers) summary[classifyServerAsset(s.name, s.description)]++;
+    res.json({ success: true, data: summary });
+  } catch {
+    res.status(500).json({ success: false, error: 'Failed to get asset summary' });
   }
 });
 

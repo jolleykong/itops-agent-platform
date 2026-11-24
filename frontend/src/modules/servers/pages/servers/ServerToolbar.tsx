@@ -11,6 +11,8 @@ interface ServerToolbarProps {
   selectedServer: ServerType | null;
   activeTab: string;
   setActiveTab: (tab: 'servers' | 'compliance' | 'command-history' | 'compliance-history') => void;
+  /** 页面标题（分层视图自定义，默认「服务器管理」） */
+  title?: string;
 }
 
 export function ServerToolbar({
@@ -21,13 +23,14 @@ export function ServerToolbar({
   selectedServer,
   activeTab,
   setActiveTab,
+  title = '服务器管理',
 }: ServerToolbarProps) {
   return (
     <>
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-text-primary mb-2">服务器管理</h1>
+          <h1 className="text-2xl font-bold text-text-primary mb-2">{title}</h1>
           <p className="text-text-secondary">管理和监控您的服务器</p>
         </div>
         <div className="flex items-center gap-3">
