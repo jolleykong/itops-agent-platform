@@ -133,6 +133,7 @@ export const navigationGroups: NavGroup[] = [
     items: [
       { name: "nav.dcInfrastructure", href: "/dc-manage", icon: LayoutGrid },
       { name: "nav.dcRoom3D", href: "/data-room", icon: Monitor },
+      { name: "nav.cmdbTopology", href: "/cmdb-topology", icon: GitBranch },
     ],
   },
   {

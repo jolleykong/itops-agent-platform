@@ -26,6 +26,7 @@
     "virtualMachines": "Virtual Machines",
     "dcInfrastructure": "DC Management",
     "dcRoom3D": "DC 3D Monitor",
+    "cmdbTopology": "CMDB Topology",
     "configTemplates": "Config Templates",
     "dockerCompose": "Docker Compose",
     "toolLinks": "Tool Navigator",

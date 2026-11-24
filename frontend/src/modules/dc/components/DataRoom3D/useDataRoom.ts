@@ -120,6 +120,10 @@ export default function useDataRoom(): UseDataRoomReturn {
             diskUsage: null,
           });
         }
+        // 按起始 U 倒序排列（U1 在物理机柜底部，编号大的在上部，与物理视觉顺序一致）
+        for (const rackId of Object.keys(slotsByRack)) {
+          slotsByRack[rackId].sort((a, b) => b.startU - a.startU);
+        }
         setRackSlotsMap(slotsByRack);
 
         // 处理机柜列表
