@@ -170,7 +170,8 @@ export function upsertDatacenterDevice(
     finalclass?: string;
   },
 ): DeviceUpsertResult {
-  const ip = fields.managementip_name || '';
+  // IP 兜底：台账导入的设备 name 即管理 IP（iTop 里 managementip 未关联 → managementip_name 为空）
+  const ip = fields.managementip_name || (/^\d{1,3}(\.\d{1,3}){3}$/.test(fields.name.trim()) ? fields.name.trim() : '');
   const finalClass = (fields.finalclass ?? '').toLowerCase();
   const isPDU = finalClass.includes('pdu') || finalClass.includes('ups');
 

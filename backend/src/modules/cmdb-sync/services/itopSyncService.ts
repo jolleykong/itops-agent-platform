@@ -288,11 +288,18 @@ const datacenterDeviceStrategy: SyncStrategy<ITopDatacenterDevice> = {
     const res = upsertDatacenterDevice(existingId, fields);
     // 挂柜关系：U 位优先从 description 台账标注「位置：Uxx」解析
     const finalClass = (fields.finalclass ?? '').toLowerCase();
-    const slotType: 'pdu' | 'ups' | 'network_device' | null =
+    const slotType: 'pdu' | 'ups' | 'network_device' | 'other' =
       res.table === 'dc_pdus' ? (finalClass.includes('ups') ? 'ups' : 'pdu')
       : res.table === 'network_devices' ? 'network_device'
-      : null;
-    const slot = slotType ? syncDeviceSlot(res.id, slotType, fields.rack_id, fields.description) : null;
+      : 'other';
+    let slot;
+    if (res.id) {
+      slot = syncDeviceSlot(res.id, slotType, fields.rack_id, fields.description);
+    } else if (fields.rack_id) {
+      // 无 IP 设备（Unity 存储、命名交换机等）无法进 network_devices（要求唯一 IP），
+      // 用设备名做占位挂柜（device_type='other'），3D 机柜可见占用、显示设备名
+      slot = syncDeviceSlot(fields.name, 'other', fields.rack_id, fields.description);
+    }
     return {
       platformId: res.id,
       action: res.action,
