@@ -228,7 +228,7 @@ export default function useDataRoom(): UseDataRoomReturn {
     try {
       const { data } = await api.get(`/dc/slots/${rackId}`);
       const slots = (data || []) as RawSlotItem[];
-      setRackSlots(slots.map((s: RawSlotItem) => ({
+      const mapped = slots.map((s: RawSlotItem) => ({
         id: s.slot_id,
         startU: s.start_u,
         endU: s.end_u,
@@ -238,7 +238,10 @@ export default function useDataRoom(): UseDataRoomReturn {
         cpuUsage: s.cpu_usage ?? null,
         memUsage: s.memory_usage ?? null,
         diskUsage: s.disk_usage ?? null,
-      })));
+      }));
+      // 按起始 U 倒序排列（U1 在物理机柜底部，编号大的在上部，与物理视觉顺序一致）
+      mapped.sort((a, b) => b.startU - a.startU);
+      setRackSlots(mapped);
     } catch (err) {
       logger.error('加载机柜 U 位失败:', err);
       setRackSlots([]);
