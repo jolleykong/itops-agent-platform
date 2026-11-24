@@ -9,6 +9,16 @@ interface Props {
 
 /** 每个 U 位在立面图中的像素高度 */
 const UH = 13;
+/** 设备段最小高度（px）：保证 1U 设备也有足够可读的展示高度 */
+const DEVICE_MIN_H = 30;
+/** 空闲段固定压缩高度（px）：空闲不按 U 数等比拉伸，避免空闲区喧宾夺主 */
+const FREE_H = 16;
+
+/** 分段渲染高度：设备段 = max(U数×UH, 最小高度)，空闲段 = 固定压缩高度 */
+function segHeight(seg: Segment): number {
+  if (!seg.slot) return FREE_H;
+  return Math.max((seg.top - seg.bottom + 1) * UH, DEVICE_MIN_H);
+}
 
 /** 设备类型 → 立面图配色（贴合 3D 页暗色主题） */
 const typeStyles: Record<string, { bg: string; bar: string; text: string; label: string }> = {
@@ -112,10 +122,10 @@ export default function RackFrontView({ rack, slots, onClose }: Props) {
           <p className="text-[11px] text-slate-600 text-center py-8">该机柜暂无设备信息</p>
         ) : (
           <div className="flex">
-            {/* U 位标尺（顶=U{totalU}，底=U1） */}
+            {/* U 位标尺（顶=U{totalU}，底=U1；高度与分段渲染一致） */}
             <div className="w-9 shrink-0 font-mono text-[10px] text-slate-600 text-right pr-1.5 select-none">
               {segments.map((seg, i) => (
-                <div key={i} style={{ height: (seg.top - seg.bottom + 1) * UH }} className="leading-none flex items-end justify-end pb-0.5">
+                <div key={i} style={{ height: segHeight(seg) }} className="leading-none flex items-end justify-end pb-0.5">
                   U{seg.top}
                 </div>
               ))}
@@ -123,15 +133,18 @@ export default function RackFrontView({ rack, slots, onClose }: Props) {
             {/* 机柜体 */}
             <div className="flex-1 min-w-0 border border-slate-600/40 rounded overflow-hidden">
               {segments.map((seg, i) => {
-                const h = (seg.top - seg.bottom + 1) * UH;
+                const h = segHeight(seg);
                 if (!seg.slot) {
                   return (
                     <div
                       key={i}
                       style={{ height: h }}
                       className="flex items-center px-2 bg-white/[0.03] border-b border-slate-700/30 last:border-b-0"
+                      title={`空闲 U${seg.bottom}-U${seg.top}（${seg.top - seg.bottom + 1}U，已压缩显示）`}
                     >
-                      <span className="text-[10px] text-slate-600">空闲</span>
+                      <span className="text-[9px] text-slate-600 truncate">
+                        {seg.top - seg.bottom + 1 > 1 ? `空闲 U${seg.bottom}-${seg.top}` : '空闲'}
+                      </span>
                     </div>
                   );
                 }
@@ -147,7 +160,8 @@ export default function RackFrontView({ rack, slots, onClose }: Props) {
                     className={`flex items-center gap-2 px-2 border-b border-black/20 last:border-b-0 border-l-2 cursor-pointer transition-all ${st.bg} ${st.bar} ${sel ? 'ring-1 ring-cyan-400/70' : ''} ${dim ? 'opacity-25' : 'hover:brightness-125'}`}
                     title={`U${s.startU}-U${s.endU} · ${s.deviceName}`}
                   >
-                    <span className={`text-[11px] truncate flex-1 min-w-0 ${st.text}`}>{s.deviceName || '(未命名设备)'}</span>
+                    <span className={`text-[12px] font-medium truncate flex-1 min-w-0 ${st.text}`}>{s.deviceName || '(未命名设备)'}</span>
+                    <span className="text-[9px] font-mono text-slate-400/70 shrink-0">U{s.startU}{s.endU > s.startU ? `-${s.endU}` : ''}</span>
                     <i className={`w-2 h-2 rounded-full shrink-0 ${statusDot[s.deviceStatus || 'unknown'] || 'bg-slate-500'}`} />
                   </div>
                 );
@@ -167,7 +181,7 @@ export default function RackFrontView({ rack, slots, onClose }: Props) {
         ))}
         <span className="flex items-center gap-1.5 text-[10px] text-slate-500">
           <i className="w-2.5 h-2.5 rounded-sm bg-white/[0.06] border border-dashed border-slate-600" />
-          空闲 U
+          空闲 U（已压缩）
         </span>
       </div>
 
