@@ -66,19 +66,23 @@ export function upsertRack(
 
   if (existingId) {
     // 只更新 name / total_u / room_id（COALESCE 保留原值）
+    // nb_u 坑：iTop 机柜 nb_u 常为空 → REST 返回 '' → `'' ?? 42` 不兜空串 → total_u 存成 ''。
+    // 必须显式数值化，空/0 一律回退 42U 标准柜。
+    const totalU = Number(fields.nb_u) > 0 ? Number(fields.nb_u) : 42;
     db.prepare(`
       UPDATE dc_racks SET name = ?, total_u = ?, room_id = COALESCE(?, room_id), updated_at = datetime('now','localtime')
       WHERE id = ?
-    `).run(fields.name, fields.nb_u ?? 42, roomId, existingId);
+    `).run(fields.name, totalU, roomId, existingId);
     return { id: existingId, action: 'update' };
   }
 
+  const totalU = Number(fields.nb_u) > 0 ? Number(fields.nb_u) : 42;
   const newId = crypto.randomUUID();
   const input: DcRackCreateInput = {
     id: newId,
     name: fields.name,
     room_id: roomId,
-    total_u: fields.nb_u ?? 42,
+    total_u: totalU,
   };
   racksRepo.create(input);
   return { id: newId, action: 'create' };
@@ -280,7 +284,9 @@ function findFreeStartU(rackId: string, needU: number): number | null {
   const rack = db.prepare('SELECT total_u FROM dc_racks WHERE id = ?').get(rackId) as
     | { total_u: number }
     | undefined;
-  const totalU = rack?.total_u ?? 42;
+  // iTop 机柜 nb_u 常为空 → REST 返回 '' → total_u 存成空串；容量必须容错回 42U
+  const rackTotal = Number(rack?.total_u);
+  const totalU = Number.isFinite(rackTotal) && rackTotal > 0 ? rackTotal : 42;
   const rows = db
     .prepare('SELECT start_u, end_u FROM dc_rack_slots WHERE rack_id = ?')
     .all(rackId) as { start_u: number; end_u: number }[];
