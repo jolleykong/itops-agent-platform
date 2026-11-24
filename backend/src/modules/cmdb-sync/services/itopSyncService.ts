@@ -25,6 +25,7 @@ import {
   upsertRack,
   upsertServer,
   upsertDatacenterDevice,
+  syncDeviceSlot,
   findRoomIdByName,
 } from './cmdbSyncWriter';
 
@@ -45,6 +46,8 @@ interface ITopServer {
   managementip_name?: string;
   svrbizip_name?: string;
   osfamily_name?: string;
+  /** iTop Rack 数字 id（Server extends DatacenterDevice，自带 rack_id 外键） */
+  rack_id?: string;
 }
 interface ITopRack {
   name: string;
@@ -63,6 +66,8 @@ interface ITopDatacenterDevice {
   description?: string;
   managementip_name?: string;
   finalclass?: string;
+  /** iTop Rack 数字 id */
+  rack_id?: string;
 }
 
 /** 每个 CI 类型的同步策略（策略模式，消除 syncXxx 的重复骨架） */
@@ -261,20 +266,39 @@ const rackStrategy: SyncStrategy<ITopRack> = {
 const serverStrategy: SyncStrategy<ITopServer> = {
   ciType: 'Server',
   oql: 'SELECT Server',
-  outputFields: 'name, managementip_name, svrbizip_name, osfamily_name, organization_name, status, serialnumber',
+  outputFields: 'name, managementip_name, svrbizip_name, osfamily_name, organization_name, status, serialnumber, rack_id',
   upsert: (fields, { existingId }) => {
     const res = upsertServer(existingId, fields);
-    return { platformId: res.id, action: res.action, table: 'servers', message: res.message };
+    // 挂柜关系：rack_id 经 Rack idMap 解析后写 dc_rack_slots（无台账 U 位 → 自动占位）
+    const slot = syncDeviceSlot(res.id, 'server', fields.rack_id);
+    return {
+      platformId: res.id,
+      action: res.action,
+      table: 'servers',
+      message: [res.message, slot.message].filter(Boolean).join('；') || undefined,
+    };
   },
 };
 
 const datacenterDeviceStrategy: SyncStrategy<ITopDatacenterDevice> = {
   ciType: 'DatacenterDevice',
   oql: 'SELECT DatacenterDevice',
-  outputFields: 'name, description, managementip_name, finalclass, organization_name, serialnumber',
+  outputFields: 'name, description, managementip_name, finalclass, organization_name, serialnumber, rack_id',
   upsert: (fields, { existingId }) => {
     const res = upsertDatacenterDevice(existingId, fields);
-    return { platformId: res.id, action: res.action, table: res.table, message: res.message };
+    // 挂柜关系：U 位优先从 description 台账标注「位置：Uxx」解析
+    const finalClass = (fields.finalclass ?? '').toLowerCase();
+    const slotType: 'pdu' | 'ups' | 'network_device' | null =
+      res.table === 'dc_pdus' ? (finalClass.includes('ups') ? 'ups' : 'pdu')
+      : res.table === 'network_devices' ? 'network_device'
+      : null;
+    const slot = slotType ? syncDeviceSlot(res.id, slotType, fields.rack_id, fields.description) : null;
+    return {
+      platformId: res.id,
+      action: res.action,
+      table: res.table,
+      message: [res.message, slot?.message].filter(Boolean).join('；') || undefined,
+    };
   },
 };
 

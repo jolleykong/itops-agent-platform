@@ -17,7 +17,7 @@
    （servers/network_devices 的现有 repo create 方法字段集与 iTop 同步需求不匹配，
     强行复用会导致字段错配。详见本文件头注释）*/
 import db from '../../../models/database';
-import { roomsRepo, racksRepo, pdusRepo } from '../../../repositories';
+import { roomsRepo, racksRepo, pdusRepo, cmdbSyncStateRepo } from '../../../repositories';
 import type { DcRackCreateInput } from '../../../repositories/dcRepository/types';
 
 // ============================================================
@@ -240,4 +240,146 @@ export function findRoomIdByName(name: string): string | null {
     | { id: string }
     | undefined;
   return room?.id ?? null;
+}
+
+// ============================================================
+// 挂柜关系 → dc_rack_slots（方案 A：让 3D 机房看到机柜内设备）
+//
+// 数据流：iTop Server/DatacenterDevice.rack_id（iTop 数字 id）
+//        → Rack idMap（rackStrategy 先行同步，iTop id → dc_racks.id）
+//        → dc_rack_slots(rack_id, device_id, start_u, end_u)
+//
+// U 位来源优先级：
+//   1) description 中的台账标注「位置：Uxx」（台账 2026-11-24v2 导入时写入）
+//   2) 机柜内首个空闲 U 位（sync Server 的 description 被 zbx2itop DS 锁定、
+//      无台账 U 位 → 自动占位，后续可在平台 UI 调整）
+// ============================================================
+
+const U_POSITION_RE = /位置[:：]\s*U(\d+)/i;
+
+/** 从 description 解析台账 U 位号（「位置：U12」格式） */
+export function parseUPosition(description?: string): number | null {
+  if (!description) return null;
+  const m = description.match(U_POSITION_RE);
+  if (!m) return null;
+  const u = parseInt(m[1], 10);
+  return Number.isFinite(u) && u > 0 ? u : null;
+}
+
+/** iTop Rack 数字 id → 平台 dc_racks.id（经 cmdb_sync_state 的 Rack idMap） */
+export function findRackPlatformId(itopRackId: string): string | null {
+  if (!itopRackId) return null;
+  const idMap = cmdbSyncStateRepo.getIdMap('Rack');
+  return idMap[String(itopRackId)] ?? null;
+}
+
+/** 在机柜内找首个可容纳 needU 个连续 U 位的起始位；满则 null */
+function findFreeStartU(rackId: string, needU: number): number | null {
+  const rack = db.prepare('SELECT total_u FROM dc_racks WHERE id = ?').get(rackId) as
+    | { total_u: number }
+    | undefined;
+  const totalU = rack?.total_u ?? 42;
+  const rows = db
+    .prepare('SELECT start_u, end_u FROM dc_rack_slots WHERE rack_id = ?')
+    .all(rackId) as { start_u: number; end_u: number }[];
+  const occupied = new Set<number>();
+  for (const r of rows) {
+    for (let u = r.start_u; u <= r.end_u; u++) occupied.add(u);
+  }
+  for (let u = 1; u + needU - 1 <= totalU; u++) {
+    let free = true;
+    for (let k = 0; k < needU; k++) {
+      if (occupied.has(u + k)) {
+        free = false;
+        break;
+      }
+    }
+    if (free) return u;
+  }
+  return null;
+}
+
+/** 指定 U 位是否被该机柜内其他槽位占用 */
+function isUOccupied(rackId: string, u: number, excludeSlotId?: string): boolean {
+  const row = db
+    .prepare(
+      'SELECT id FROM dc_rack_slots WHERE rack_id = ? AND start_u <= ? AND end_u >= ? AND id != COALESCE(?, \'\') LIMIT 1',
+    )
+    .get(rackId, u, u, excludeSlotId ?? null);
+  return row !== undefined;
+}
+
+export interface SlotSyncResult {
+  action: 'create' | 'update' | 'skip';
+  message?: string;
+}
+
+/**
+ * 同步单台设备的挂柜关系（幂等，随每轮 sync 重算）
+ *
+ * 规则：
+ *   - 设备未落库（platformId 空）/ 机柜未解析（rack_id 未同步或缺关联）→ skip
+ *   - 已有槽位：同柜不动；换柜时保留原 U 位（冲突则重新占位）
+ *   - 无槽位：台账 U 位可用则落台账 U（冲突顺延），否则自动占首个空闲 U
+ *
+ * @param deviceId   平台设备 id（servers.id / network_devices.id / dc_pdus.id）
+ * @param deviceType dc_rack_slots.device_type：'server' | 'network_device' | 'pdu' | 'ups'
+ */
+export function syncDeviceSlot(
+  deviceId: string,
+  deviceType: 'server' | 'network_device' | 'pdu' | 'ups',
+  itopRackId: string | undefined,
+  description?: string,
+): SlotSyncResult {
+  if (!deviceId) return { action: 'skip', message: '设备未落库，跳过挂柜' };
+  const rackId = findRackPlatformId(String(itopRackId ?? ''));
+  if (!rackId) return { action: 'skip', message: '机柜未同步或缺关联，跳过挂柜' };
+
+  const existing = db
+    .prepare('SELECT id, rack_id, start_u, end_u FROM dc_rack_slots WHERE device_id = ? AND device_type = ? LIMIT 1')
+    .get(deviceId, deviceType) as
+    | { id: string; rack_id: string; start_u: number; end_u: number }
+    | undefined;
+
+  // ── 已有槽位：处理换柜 ──
+  if (existing) {
+    if (existing.rack_id === rackId) {
+      return { action: 'skip', message: '挂柜关系未变化' };
+    }
+    const needU = existing.end_u - existing.start_u + 1;
+    if (!isUOccupied(rackId, existing.start_u, existing.id)) {
+      db.prepare(
+        "UPDATE dc_rack_slots SET rack_id = ?, updated_at = datetime('now','localtime') WHERE id = ?",
+      ).run(rackId, existing.id);
+      return { action: 'update', message: `换柜，保留 U${existing.start_u}-${existing.end_u}` };
+    }
+    const free = findFreeStartU(rackId, needU);
+    if (free === null) {
+      return { action: 'skip', message: '换柜失败：目标机柜无空闲连续 U 位' };
+    }
+    db.prepare(
+      "UPDATE dc_rack_slots SET rack_id = ?, start_u = ?, end_u = ?, updated_at = datetime('now','localtime') WHERE id = ?",
+    ).run(rackId, free, free + needU - 1, existing.id);
+    return { action: 'update', message: `换柜，占 U${free}-${free + needU - 1}` };
+  }
+
+  // ── 新挂柜 ──
+  const descU = parseUPosition(description);
+  let startU: number | null = null;
+  let note = '';
+  if (descU !== null && !isUOccupied(rackId, descU)) {
+    startU = descU;
+    note = `台账 U${descU}`;
+  }
+  if (startU === null) {
+    const free = findFreeStartU(rackId, 1);
+    if (free === null) return { action: 'skip', message: '机柜无空闲 U 位，跳过挂柜' };
+    startU = free;
+    note = descU !== null ? `台账 U${descU} 冲突，自动占位` : '自动占位';
+  }
+  db.prepare(
+    `INSERT INTO dc_rack_slots (id, rack_id, device_id, device_type, start_u, end_u, position_face, notes, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'front', ?, datetime('now','localtime'), datetime('now','localtime'))`,
+  ).run(crypto.randomUUID(), rackId, deviceId, deviceType, startU, startU, note);
+  return { action: 'create', message: `挂柜 U${startU}（${note}）` };
 }
