@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import Scene from './Scene';
 import type { ViewMode } from './Scene';
 import DashboardOverlay from './DashboardOverlay';
-import SlotDetailPanel from './SlotDetailPanel';
+import RackFrontView from './RackFrontView';
 import useDataRoom from './useDataRoom';
 
 export default function DataRoom3D() {
@@ -148,7 +148,7 @@ export default function DataRoom3D() {
       />
 
       {slotDetailOpen && selectedRack && (
-        <SlotDetailPanel
+        <RackFrontView
           rack={selectedRack}
           slots={rackSlots}
           onClose={() => { setSlotDetailOpen(false); setSelectedRack(null); }}
