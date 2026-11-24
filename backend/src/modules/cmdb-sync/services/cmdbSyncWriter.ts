@@ -348,28 +348,37 @@ export interface SlotSyncResult {
  * 同步单台设备的挂柜关系（幂等，随每轮 sync 重算）
  *
  * 规则：
- *   - 设备未落库（platformId 空）/ 机柜未解析（rack_id 未同步或缺关联）→ skip
+ *   - iTop 无机柜关联且平台已有槽位 → 摘除槽位（解除挂柜，iTop 是唯一事实源）
+ *   - 设备未落库（platformId 空）且无槽位 → skip
  *   - 已有槽位：同柜不动；换柜时保留原 U 位（冲突则重新占位）
  *   - 无槽位：台账 U 位可用则落台账 U（冲突顺延），否则自动占首个空闲 U
  *
- * @param deviceId   平台设备 id（servers.id / network_devices.id / dc_pdus.id）
- * @param deviceType dc_rack_slots.device_type：'server' | 'network_device' | 'pdu' | 'ups'
+ * @param deviceId   平台设备 id（servers.id / network_devices.id / dc_pdus.id / 占位=设备名）
+ * @param deviceType dc_rack_slots.device_type：'server' | 'network_device' | 'pdu' | 'ups' | 'other'
  */
 export function syncDeviceSlot(
   deviceId: string,
-  deviceType: 'server' | 'network_device' | 'pdu' | 'ups',
+  deviceType: 'server' | 'network_device' | 'pdu' | 'ups' | 'other',
   itopRackId: string | undefined,
   description?: string,
 ): SlotSyncResult {
-  if (!deviceId) return { action: 'skip', message: '设备未落库，跳过挂柜' };
-  const rackId = findRackPlatformId(String(itopRackId ?? ''));
-  if (!rackId) return { action: 'skip', message: '机柜未同步或缺关联，跳过挂柜' };
+  const existing = deviceId
+    ? (db
+        .prepare('SELECT id, rack_id, start_u, end_u FROM dc_rack_slots WHERE device_id = ? AND device_type = ? LIMIT 1')
+        .get(deviceId, deviceType) as
+        | { id: string; rack_id: string; start_u: number; end_u: number }
+        | undefined)
+    : undefined;
 
-  const existing = db
-    .prepare('SELECT id, rack_id, start_u, end_u FROM dc_rack_slots WHERE device_id = ? AND device_type = ? LIMIT 1')
-    .get(deviceId, deviceType) as
-    | { id: string; rack_id: string; start_u: number; end_u: number }
-    | undefined;
+  // iTop 侧已无机柜关联（rack_id 清零/未同步）→ 摘除平台槽位（数据源是唯一事实）
+  const rackId = findRackPlatformId(String(itopRackId ?? ''));
+  if (!rackId) {
+    if (existing) {
+      db.prepare('DELETE FROM dc_rack_slots WHERE id = ?').run(existing.id);
+      return { action: 'update', message: '解除挂柜（iTop 侧已取消机柜关联）' };
+    }
+    return { action: 'skip', message: deviceId ? '机柜未关联，跳过挂柜' : '设备未落库，跳过挂柜' };
+  }
 
   // ── 已有槽位：处理换柜 ──
   if (existing) {

@@ -282,7 +282,9 @@ const serverStrategy: SyncStrategy<ITopServer> = {
 
 const datacenterDeviceStrategy: SyncStrategy<ITopDatacenterDevice> = {
   ciType: 'DatacenterDevice',
-  oql: 'SELECT DatacenterDevice',
+  // Server 是 DatacenterDevice 的子类：不过滤会把 1477 台 Server 重复拉进本轮
+  // （按名字占位挂柜产生双份槽位）。排除后仅剩真正的机房设备（NetworkDevice/PDU/UPS/StorageSystem...）
+  oql: "SELECT DatacenterDevice WHERE finalclass != 'Server'",
   outputFields: 'name, description, managementip_name, finalclass, organization_name, serialnumber, rack_id',
   upsert: (fields, { existingId }) => {
     const res = upsertDatacenterDevice(existingId, fields);
