@@ -255,14 +255,16 @@ export function findRoomIdByName(name: string): string | null {
 //      无台账 U 位 → 自动占位，后续可在平台 UI 调整）
 // ============================================================
 
-const U_POSITION_RE = /位置[:：]\s*U(\d+)/i;
+// description 实测格式（台账导入）：'位置:U30（台账 2026-11-24） 位置:U32（台账 2026-11-24v2）'
+// — v1/v2 标注并存（半角冒号），必须取最后一个匹配（最新的 v2 标注）
+const U_POSITION_RE = /位置[:：]\s*U(\d+)/gi;
 
-/** 从 description 解析台账 U 位号（「位置：U12」格式） */
+/** 从 description 解析台账 U 位号；多条标注并存时取最后一条（最新） */
 export function parseUPosition(description?: string): number | null {
   if (!description) return null;
-  const m = description.match(U_POSITION_RE);
-  if (!m) return null;
-  const u = parseInt(m[1], 10);
+  const matches = [...description.matchAll(U_POSITION_RE)];
+  if (matches.length === 0) return null;
+  const u = parseInt(matches[matches.length - 1][1], 10);
   return Number.isFinite(u) && u > 0 ? u : null;
 }
 
