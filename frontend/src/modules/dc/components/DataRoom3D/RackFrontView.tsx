@@ -20,6 +20,18 @@ interface CiChainResp {
   degraded?: string;
 }
 
+/**
+ * 兼容两种响应形态：axios 拦截器已解包 { success, data } 信封时直接返回载荷，
+ * 未解包（success 布尔存在）时取内层 data。
+ */
+function unwrapCiResp(data: unknown): CiChainResp | null {
+  const d = data as { success?: boolean; data?: CiChainResp } | CiChainResp | undefined;
+  if (d && typeof (d as { success?: boolean }).success === 'boolean') {
+    return (d as { data?: CiChainResp }).data ?? null;
+  }
+  return (d as CiChainResp) ?? null;
+}
+
 /** iTop 类 → 中文展示名 */
 const ciClassLabel: Record<string, string> = {
   Server: '物理服务器',
@@ -132,8 +144,9 @@ export default function RackFrontView({ rack, slots, onClose }: Props) {
       })
       .then(({ data }) => {
         if (cancelled) return;
-        if (data?.success) setCiChain(data.data as CiChainResp);
-        else setCiErr(data?.message || 'CI 关系查询失败');
+        const resp = unwrapCiResp(data);
+        if (resp) setCiChain(resp);
+        else setCiErr('CI 关系查询失败');
       })
       .catch((e: unknown) => {
         if (!cancelled) setCiErr(e instanceof Error ? e.message : 'CI 关系查询失败');
@@ -315,8 +328,9 @@ function CiTreeNode({ node, depth }: { node: CiChainNode; depth: number }) {
     setErr('');
     try {
       const { data } = await api.get('/dc/ci-chain', { params: { class: node.class, name: node.name } });
-      if (!data?.success) throw new Error(data?.message || '查询失败');
-      setChain(data.data as CiChainResp);
+      const resp = unwrapCiResp(data);
+      if (!resp) throw new Error('查询失败');
+      setChain(resp);
       setExpanded(true);
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'CI 关系查询失败');

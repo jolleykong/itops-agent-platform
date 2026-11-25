@@ -7,7 +7,9 @@ import type { Rack3D, SlotInfo, OverviewData, AlertItem } from './types';
 
 interface RawSlotItem {
   rack_id: string;
-  slot_id: string;
+  /** dc_rack_slots 主键（后端 SELECT s.* 返回 id；slot_id 仅兼容旧映射） */
+  id?: string;
+  slot_id?: string;
   start_u: number;
   end_u: number;
   device_name?: string;
@@ -18,6 +20,23 @@ interface RawSlotItem {
   cpu_usage?: number | null;
   memory_usage?: number | null;
   disk_usage?: number | null;
+}
+
+/** 后端槽位行 → 前端 SlotInfo（id 取槽位主键，兜底 rack+U 位合成键） */
+function mapSlot(s: RawSlotItem, fallbackRack?: string): SlotInfo {
+  const id = s.slot_id || s.id || `${fallbackRack || s.rack_id}-U${s.start_u}`;
+  return {
+    id,
+    startU: s.start_u,
+    endU: s.end_u,
+    deviceName: s.device_name || s.device_id || '',
+    deviceId: s.device_id || '',
+    deviceType: s.device_type || '',
+    deviceStatus: s.device_status || s.server_status || 'unknown',
+    cpuUsage: s.cpu_usage ?? null,
+    memUsage: s.memory_usage ?? null,
+    diskUsage: s.disk_usage ?? null,
+  };
 }
 
 interface RawRackItem {
@@ -108,18 +127,7 @@ export default function useDataRoom(): UseDataRoomReturn {
         const slotsByRack: Record<string, SlotInfo[]> = {};
         for (const s of slotsData) {
           if (!slotsByRack[s.rack_id]) slotsByRack[s.rack_id] = [];
-          slotsByRack[s.rack_id].push({
-            id: s.slot_id,
-            startU: s.start_u,
-            endU: s.end_u,
-            deviceName: s.device_name || s.device_id || '',
-            deviceId: s.device_id || '',
-            deviceType: s.device_type || '',
-            deviceStatus: s.device_status || 'unknown',
-            cpuUsage: null,
-            memUsage: null,
-            diskUsage: null,
-          });
+          slotsByRack[s.rack_id].push(mapSlot(s));
         }
         // 按起始 U 倒序排列（U1 在物理机柜底部，编号大的在上部，与物理视觉顺序一致）
         for (const rackId of Object.keys(slotsByRack)) {
@@ -228,19 +236,9 @@ export default function useDataRoom(): UseDataRoomReturn {
   const fetchRackSlots = useCallback(async (rackId: string) => {
     try {
       const { data } = await api.get(`/dc/slots/${rackId}`);
-      const slots = (data || []) as RawSlotItem[];
-      const mapped = slots.map((s: RawSlotItem) => ({
-        id: s.slot_id,
-        startU: s.start_u,
-        endU: s.end_u,
-        deviceName: s.device_name || s.device_id || '',
-        deviceId: s.device_id || '',
-        deviceType: s.device_type || '',
-        deviceStatus: s.device_status || s.server_status || 'unknown',
-        cpuUsage: s.cpu_usage ?? null,
-        memUsage: s.memory_usage ?? null,
-        diskUsage: s.disk_usage ?? null,
-      }));
+      // 接口返回 { success, data: [...] }，兼容裸数组
+      const slots = (data?.data ?? data ?? []) as RawSlotItem[];
+      const mapped = slots.map(s => mapSlot(s, rackId));
       // 按起始 U 倒序排列（U1 在物理机柜底部，编号大的在上部，与物理视觉顺序一致）
       mapped.sort((a, b) => b.startU - a.startU);
       setRackSlots(mapped);
