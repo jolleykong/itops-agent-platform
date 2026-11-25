@@ -130,12 +130,31 @@ export function normalizeOsNodeName(name: string): string {
   return name.trim().replace(/-\d+$/, '');
 }
 
+/**
+ * OS 节点命名匹配（2026-11-25 定稿规范）：
+ * OS 层物理机可见名 = svr-<hostname>-<备注信息>（如 svr-obdb02-197、svr-ctdbdc01-BO）。
+ * 匹配规则（rowName 为 OS 行名 / host 为真实主机名，均不区分大小写）：
+ *   1. 完全相等（裸主机名行，旧世代）
+ *   2. svr- 前缀剥离后：剩余段 === host 或以「host-」开头（备注信息）
+ *   3. 兜底：剥离「-纯数字尾巴」后相等（obdb02-197 ↔ obdb02）
+ */
+export function osNameMatchesHost(rowName: string, host: string): boolean {
+  const r = rowName.trim().toLowerCase();
+  const h = host.trim().toLowerCase();
+  if (!r || !h) return false;
+  if (r === h) return true;
+  if (r.startsWith('svr-')) {
+    const rem = r.slice(4);
+    if (rem === h || rem.startsWith(h + '-')) return true;
+  }
+  return normalizeOsNodeName(r) === normalizeOsNodeName(h);
+}
+
 /** 找出「其 RAC 实例运行在指定 OS 节点上」的 DB 主机及实例清单 */
 export async function findDbHostsByOsHost(osName: string): Promise<DbHostInstanceMap[]> {
   const maps = await fetchDbInstanceMaps();
-  const target = normalizeOsNodeName(osName).toLowerCase();
   return maps
-    .map(m => ({ ...m, instances: m.instances.filter(i => normalizeOsNodeName(i.host_name).toLowerCase() === target) }))
+    .map(m => ({ ...m, instances: m.instances.filter(i => osNameMatchesHost(osName, i.host_name)) }))
     .filter(m => m.instances.length > 0);
 }
 
