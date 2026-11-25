@@ -340,7 +340,11 @@ function CiColumn({
 }) {
   const [copied, setCopied] = useState(false);
   const resp = lv.resp;
-  const hasRelations = resp ? resp.parents.length + resp.children.length > 0 : false;
+  /** 深层列过滤"回指"关系：本列对象来自上一列点击，上一列对象（即本列 key）不再重复展示 */
+  const excludeKey = idx > 0 ? lv.key : undefined;
+  const visibleParents = resp ? resp.parents.filter(p => `${p.class}:${p.name}` !== excludeKey) : [];
+  const visibleChildren = resp ? resp.children.filter(c => `${c.class}:${c.name}` !== excludeKey) : [];
+  const hasRelations = visibleParents.length + visibleChildren.length > 0;
   const copyName = async () => {
     const name = selectedInfo?.deviceName ?? resp?.self?.name;
     if (!name) return;
@@ -402,7 +406,7 @@ function CiColumn({
                 <span className="text-[11px] text-slate-100 truncate flex-1 min-w-0" title={resp.self.name}>{resp.self.name}</span>
               </div>
             )}
-            {resp.parents.map((p, i) => {
+            {visibleParents.map((p, i) => {
               const key = `${p.class}:${p.name}`;
               return (
                 <CiRow
@@ -413,7 +417,7 @@ function CiColumn({
                 />
               );
             })}
-            {resp.children.map((c, i) => {
+            {visibleChildren.map((c, i) => {
               const key = `${c.class}:${c.name}`;
               return (
                 <CiRow
