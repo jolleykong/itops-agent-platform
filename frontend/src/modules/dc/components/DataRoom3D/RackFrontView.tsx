@@ -1,5 +1,48 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import api from '../../../../lib/api';
 import type { Rack3D, SlotInfo } from './types';
+
+/** CI 关系链节点（后端 /dc/ci-chain 返回） */
+interface CiChainNode {
+  class: string;
+  name: string;
+  relation: string;
+  status?: string;
+  ip?: string;
+  extra?: string;
+}
+
+interface CiChainResp {
+  self: { class: string; name: string; status?: string; ip?: string; extra?: string } | null;
+  parents: CiChainNode[];
+  children: CiChainNode[];
+  source: 'itop' | 'local' | 'none';
+  degraded?: string;
+}
+
+/** iTop 类 → 中文展示名 */
+const ciClassLabel: Record<string, string> = {
+  Server: '物理服务器',
+  VirtualMachine: '虚拟机',
+  Hypervisor: '虚拟化宿主',
+  DBServer: '数据库实例',
+  NetworkDevice: '网络设备',
+  StorageSystem: '存储系统',
+  PDU: 'PDU',
+  UPS: 'UPS',
+  OsHost: '操作系统（Zabbix）',
+  Rack: '机柜',
+  Room: '机房',
+  FunctionalCI: 'CI 对象',
+};
+
+/** iTop status 枚举 → 状态点颜色 */
+function ciStatusDot(status?: string): string {
+  if (!status) return 'bg-slate-600';
+  if (status === 'obsolete' || status === 'offline') return 'bg-red-400';
+  if (status === 'stock' || status === 'implementation') return 'bg-orange-400';
+  return 'bg-green-400'; // production / active 等
+}
 
 interface Props {
   rack: Rack3D;
@@ -65,6 +108,10 @@ export default function RackFrontView({ rack, slots, onClose }: Props) {
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<SlotInfo | null>(null);
   const [copied, setCopied] = useState(false);
+  // CI 关系链（点击设备 → 二级清单展示上层/下层对象，节点可递归展开）
+  const [ciChain, setCiChain] = useState<CiChainResp | null>(null);
+  const [ciLoading, setCiLoading] = useState(false);
+  const [ciErr, setCiErr] = useState('');
 
   const totalU = rack.totalU || 42;
   const segments = useMemo(() => buildSegments(slots, totalU), [slots, totalU]);
@@ -73,6 +120,27 @@ export default function RackFrontView({ rack, slots, onClose }: Props) {
   const match = (s: SlotInfo) => !q || s.deviceName.toLowerCase().includes(q);
 
   const usagePercent = totalU > 0 ? Math.round((rack.usedU / totalU) * 100) : 0;
+
+  // 选中设备变化 → 加载该设备的 CI 关系（首次：deviceId/deviceType/deviceName 解析；展开层走 class+name）
+  useEffect(() => {
+    if (!selected) { setCiChain(null); setCiErr(''); return; }
+    let cancelled = false;
+    setCiLoading(true); setCiErr(''); setCiChain(null);
+    api
+      .get('/dc/ci-chain', {
+        params: { deviceId: selected.deviceId || '', deviceType: selected.deviceType, deviceName: selected.deviceName },
+      })
+      .then(({ data }) => {
+        if (cancelled) return;
+        if (data?.success) setCiChain(data.data as CiChainResp);
+        else setCiErr(data?.message || 'CI 关系查询失败');
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setCiErr(e instanceof Error ? e.message : 'CI 关系查询失败');
+      })
+      .finally(() => { if (!cancelled) setCiLoading(false); });
+    return () => { cancelled = true; };
+  }, [selected]);
 
   const copyName = async () => {
     if (!selected) return;
@@ -185,7 +253,7 @@ export default function RackFrontView({ rack, slots, onClose }: Props) {
         </span>
       </div>
 
-      {/* 选中设备详情 */}
+      {/* 选中设备详情 + CI 关系层级 */}
       {selected && (
         <div className="px-4 py-3 border-t border-cyan-500/30 bg-cyan-500/5 shrink-0">
           <div className="flex items-center justify-between gap-2">
@@ -204,6 +272,93 @@ export default function RackFrontView({ rack, slots, onClose }: Props) {
             {selected.cpuUsage != null && <span>CPU：<span className="text-slate-200">{selected.cpuUsage}%</span></span>}
             {selected.memUsage != null && <span>内存：<span className="text-slate-200">{selected.memUsage}%</span></span>}
           </div>
+
+          {/* CI 关系层级树：↑=上层对象（OS→硬件 / VM→宿主），↓=下层对象（硬件→OS/VM/DB），点击节点递归展开 */}
+          <div className="mt-2 pt-2 border-t border-slate-700/30 max-h-[210px] overflow-y-auto">
+            <p className="text-[10px] text-slate-500 mb-1">🔗 CI 关系 · 点击节点逐级展开</p>
+            {ciLoading && <p className="text-[10px] text-slate-500 py-1">查询 CI 关系中…</p>}
+            {ciErr && <p className="text-[10px] text-red-400/80 py-1">✕ {ciErr}</p>}
+            {ciChain && ciChain.source === 'none' && (
+              <p className="text-[10px] text-orange-400/70 py-1">⚠ {ciChain.degraded || '未找到对应 CI 对象'}</p>
+            )}
+            {ciChain && ciChain.self && (
+              <CiTreeNode
+                node={{
+                  class: ciChain.self.class,
+                  name: ciChain.self.name,
+                  relation: '当前设备',
+                  status: ciChain.self.status,
+                  ip: ciChain.self.ip,
+                  extra: ciChain.self.extra,
+                }}
+                depth={0}
+              />
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 单行 CI 节点：可展开查邻接关系（递归多级别层次展开） */
+function CiTreeNode({ node, depth }: { node: CiChainNode; depth: number }) {
+  const [expanded, setExpanded] = useState(false);
+  const [chain, setChain] = useState<CiChainResp | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState('');
+
+  const toggle = async () => {
+    if (expanded) { setExpanded(false); return; }
+    if (chain || err) { setExpanded(true); return; }
+    setLoading(true);
+    setErr('');
+    try {
+      const { data } = await api.get('/dc/ci-chain', { params: { class: node.class, name: node.name } });
+      if (!data?.success) throw new Error(data?.message || '查询失败');
+      setChain(data.data as CiChainResp);
+      setExpanded(true);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'CI 关系查询失败');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const hasRelations = true; // 每个节点都可能带父/子关系，统一给展开箭头
+  const label = ciClassLabel[node.class] || node.class;
+
+  return (
+    <div style={{ marginLeft: depth > 0 ? 14 : 0 }}>
+      <div
+        className="flex items-center gap-1.5 py-1 cursor-pointer group rounded px-1 -mx-1 hover:bg-white/5 transition-colors"
+        onClick={toggle}
+      >
+        <span className={`w-3 text-[9px] text-slate-500 shrink-0 text-center ${hasRelations ? 'group-hover:text-cyan-400' : ''}`}>
+          {loading ? '…' : expanded ? '▾' : '▸'}
+        </span>
+        <i className={`w-1.5 h-1.5 rounded-full shrink-0 ${ciStatusDot(node.status)}`} />
+        <span className="text-[9px] px-1 py-0.5 rounded bg-cyan-500/10 border border-cyan-500/20 text-cyan-300/80 shrink-0">
+          {label}
+        </span>
+        <span className="text-[11px] text-slate-200 truncate flex-1 min-w-0" title={node.name}>{node.name}</span>
+        <span className="text-[9px] text-slate-500 shrink-0">{node.relation}</span>
+      </div>
+      {err && <p className="text-[10px] text-red-400/80 ml-4 py-0.5">{err}</p>}
+      {expanded && chain && (
+        <div className="ml-3 border-l border-slate-700/40 pl-1">
+          {chain.degraded && (
+            <p className="text-[9px] text-orange-400/70 py-0.5">⚠ {chain.degraded}</p>
+          )}
+          {chain.parents.length === 0 && chain.children.length === 0 && (
+            <p className="text-[10px] text-slate-600 py-0.5 ml-3">无关联 CI 对象</p>
+          )}
+          {chain.parents.map((p, i) => (
+            <CiTreeNode key={`p-${i}`} node={{ ...p, relation: `↑ ${p.relation}` }} depth={depth + 1} />
+          ))}
+          {chain.children.map((c, i) => (
+            <CiTreeNode key={`c-${i}`} node={{ ...c, relation: `↓ ${c.relation}` }} depth={depth + 1} />
+          ))}
         </div>
       )}
     </div>

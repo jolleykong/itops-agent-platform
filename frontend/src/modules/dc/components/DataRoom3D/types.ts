@@ -24,6 +24,8 @@ export interface SlotInfo {
   startU: number;
   endU: number;
   deviceName: string;
+  /** 平台设备 id（servers/network_devices/dc_pdus 主键；other 占位=设备名） */
+  deviceId?: string;
   deviceType: string;
   deviceStatus: string | null;
   cpuUsage: number | null;

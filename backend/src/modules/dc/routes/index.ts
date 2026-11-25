@@ -12,6 +12,7 @@ import deviceTypesRouter from './deviceTypes';
 import powerPanelsRouter from './powerPanels';
 import powerFeedsRouter from './powerFeeds';
 import cablesRouter from './cables';
+import ciChainRouter from './ciChain';
 
 const router = Router();
 
@@ -30,6 +31,7 @@ router.use('/device-types', deviceTypesRouter);
 router.use('/power-panels', powerPanelsRouter);
 router.use('/power-feeds', powerFeedsRouter);
 router.use('/cables', cablesRouter);
+router.use('/ci-chain', ciChainRouter);
 
 // GET /health — 快速检查路由是否存活
 router.get('/health', (_req, res) => {
