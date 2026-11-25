@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import api from '../../../../lib/api';
+import { copyTextToClipboard } from '../../../../utils/clipboard';
 import type { Rack3D, SlotInfo } from './types';
 import type { DcScheme } from './theme';
 
@@ -401,21 +402,21 @@ function CiColumn({
 
   const copyName = async () => {
     if (!selfName) return;
-    try {
-      await navigator.clipboard.writeText(selfName);
+    const ok = await copyTextToClipboard(selfName);
+    if (ok) {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
-    } catch { /* 剪贴板不可用时静默 */ }
+    }
   };
 
   /** 复制根层级 → 本层层级的链路文本（如 LGY-2-6 > svr-MGMT-… > zydb81） */
   const copyChain = async () => {
     if (hierarchy.length === 0) return;
-    try {
-      await navigator.clipboard.writeText(hierarchy.join(' > '));
+    const ok = await copyTextToClipboard(hierarchy.join(' > '));
+    if (ok) {
       setCopiedChain(true);
       setTimeout(() => setCopiedChain(false), 1500);
-    } catch { /* 剪贴板不可用时静默 */ }
+    }
   };
 
   return (

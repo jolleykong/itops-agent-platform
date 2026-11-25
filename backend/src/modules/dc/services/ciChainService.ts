@@ -130,6 +130,17 @@ interface RelationQuery {
   fields: string;
 }
 
+/**
+ * DBServer 残渣过滤（代码层，不能放 OQL）：
+ * iTop OQL 的 `!=` 会把 status 未设置（NULL）的行一并排除，而新同步 CI status 恰好是 NULL，
+ * 所以无法用 OQL 表达「非 inactive 且含 NULL」，必须在结果集里剔除。
+ * 残渣来源：Zabbix 主机改名 DB-ORA-* 后旧命名 CI 已标 inactive。
+ */
+function isStaleDbServer(status: string | null | undefined): boolean {
+  const s = (status ?? '').trim().toLowerCase();
+  return s === 'inactive' || s === 'obsolete';
+}
+
 /** 下层（children）关系查询表 */
 const CHILDREN_QUERIES: Record<string, RelationQuery[]> = {
   Server: [
@@ -318,11 +329,14 @@ export async function getCiChain(params: {
   for (const q of CHILDREN_QUERIES[self.class] ?? []) {
     const rows = await listByOQL(q.className, q.oql(name), q.fields);
     for (const r of rows) {
+      const st = normalizeStatus(fieldStr(r.fields, 'status'));
+      // 残渣 DBServer（Zabbix 改名前旧命名，已标 inactive）不展示
+      if (r.class === 'DBServer' && isStaleDbServer(st)) continue;
       children.push({
         class: r.class,
         name: fieldStr(r.fields, 'name') ?? String(r.key),
         relation: q.relation,
-        status: normalizeStatus(fieldStr(r.fields, 'status')),
+        status: st,
         ip: fieldStr(r.fields, 'managementip_name'),
         extra: fieldStr(r.fields, 'osfamily_name'),
       });
@@ -394,6 +408,7 @@ async function osDbInstanceChildren(osName: string): Promise<CiChainNode[]> {
     for (const r of rows) {
       const dbsName = fieldStr(r.fields, 'name') ?? String(r.key);
       if (!dbsName.toLowerCase().includes(m.zhost.toLowerCase())) continue;
+      if (isStaleDbServer(fieldStr(r.fields, 'status'))) continue;
       if (!byName.has(dbsName)) {
         byName.set(dbsName, {
           class: 'DBServer',
