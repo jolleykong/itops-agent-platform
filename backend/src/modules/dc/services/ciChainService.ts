@@ -174,13 +174,20 @@ function localOsChildren(serverName: string): CiChainNode[] {
        LIMIT 5`,
     )
     .all(serverName) as LocalServerRow[];
-  return rows.map(r => ({
-    class: 'OsHost',
-    name: r.name,
-    relation: '操作系统层（Zabbix）',
-    ip: r.ip_address ?? undefined,
-    extra: r.os || undefined,
-  }));
+  // 同名重复行去重（本地表存在同名多行），保留信息最全的一条
+  const byName = new Map<string, CiChainNode>();
+  for (const r of rows) {
+    if (!byName.has(r.name)) {
+      byName.set(r.name, {
+        class: 'OsHost',
+        name: r.name,
+        relation: '操作系统层（Zabbix）',
+        ip: r.ip_address ?? undefined,
+        extra: r.os || undefined,
+      });
+    }
+  }
+  return [...byName.values()];
 }
 
 /** OS 层主机 → 硬件服务器（本地反查，BMC 命名约定） */
