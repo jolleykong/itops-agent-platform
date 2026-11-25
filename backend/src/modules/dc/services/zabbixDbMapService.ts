@@ -119,23 +119,39 @@ export async function fetchDbInstanceMaps(): Promise<DbHostInstanceMap[]> {
   }
 }
 
+/**
+ * 归一化 OS 节点名：剥离遗留「-数字」后缀。
+ * 背景（2026-11-25 排查 obdb02 关联缺失）：部分旧 OS 主机可见名带机房编号尾巴
+ * （svr-obdb02-197 → itops/iTop 行名 obdb02-197），与 BMC 硬件名后缀/ gv$instance
+ * 的真实主机名（obdb02）不一致，导致派生链按名匹配断链。
+ * 只剥「纯数字尾巴」（obdb02-197 → obdb02），不影响 zydb11 / mchrdb01 / rac-vip1 等。
+ */
+export function normalizeOsNodeName(name: string): string {
+  return name.trim().replace(/-\d+$/, '');
+}
+
 /** 找出「其 RAC 实例运行在指定 OS 节点上」的 DB 主机及实例清单 */
 export async function findDbHostsByOsHost(osName: string): Promise<DbHostInstanceMap[]> {
   const maps = await fetchDbInstanceMaps();
-  const target = osName.toLowerCase();
+  const target = normalizeOsNodeName(osName).toLowerCase();
   return maps
-    .map(m => ({ ...m, instances: m.instances.filter(i => i.host_name.toLowerCase() === target) }))
+    .map(m => ({ ...m, instances: m.instances.filter(i => normalizeOsNodeName(i.host_name).toLowerCase() === target) }))
     .filter(m => m.instances.length > 0);
 }
 
 /**
- * 反向：给定 iTop DBServer 名称（如 DB-ORA-10-CPCNRTN / 10-CPCNRTN），
- * 找出名称中包含的 Zabbix DB 主机及其全部实例（跨节点）。
+ * 反向：给定 iTop DBServer 名称，找出对应的 Zabbix DB 主机及其全部实例（跨节点）。
+ * 优先按技术名（zhost，如 CPCNRTN ⊂ DB-ORA-10-CPCNRTN）；技术名与 CI 名无交集时
+ * （如 OBCP ↔ DB-ORA-OBDB-ODBC）按可见名（zname）兜底匹配。
  */
 export async function findDbHostsByDbServerName(dbServerName: string): Promise<DbHostInstanceMap[]> {
   const maps = await fetchDbInstanceMaps();
   const n = dbServerName.toLowerCase();
-  return maps.filter(m => n.includes(m.zhost.toLowerCase()));
+  return maps.filter(m => {
+    const zh = m.zhost?.toLowerCase();
+    const zn = m.zname?.toLowerCase();
+    return (!!zh && n.includes(zh)) || (!!zn && n.includes(zn));
+  });
 }
 
 /** 清缓存（测试用） */

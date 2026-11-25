@@ -17,7 +17,7 @@
 import db from '../../../models/database';
 import { logger } from '../../../utils/logger';
 import { itopClient } from '../../cmdb-sync/services/itopClient';
-import { findDbHostsByOsHost, findDbHostsByDbServerName } from './zabbixDbMapService';
+import { findDbHostsByOsHost, findDbHostsByDbServerName, normalizeOsNodeName } from './zabbixDbMapService';
 
 // ============================================================
 // 类型
@@ -176,41 +176,51 @@ interface LocalServerRow {
 /**
  * 硬件服务器 → OS 层主机（本地反查）
  * 硬件命名 svr-MGMT-{带外IP}-{OS名}：OS 主机名是硬件名的 `-` 后缀段
+ * 兼容遗留命名：部分 OS 主机带「-数字」尾巴（obdb02-197 ↔ obdb02），按归一化名兜底匹配
  */
+function hardwareOsSuffix(serverName: string): string {
+  return serverName.replace(/^svr-(?:MGMT|iLo|idrac|bmc|imm)-[\d.]+-/, '');
+}
+
 function localOsChildren(serverName: string): CiChainNode[] {
-  if (!serverName.startsWith('svr-MGMT-')) return [];
+  if (!serverName.startsWith('svr-')) return [];
+  const suffix = hardwareOsSuffix(serverName);
+  if (!suffix) return [];
+  // 精确后缀（instr）为主；前缀 LIKE 只为捞遗留 -数字尾巴行，代码层再按归一化名严筛
   const rows = db
     .prepare(
       `SELECT id, name, ip_address, os FROM servers
-       WHERE instr(?, '-' || name) > 0 AND length(name) >= 3 AND name NOT LIKE 'svr-MGMT-%'
-       LIMIT 5`,
+       WHERE (instr(?, '-' || name) > 0 OR name LIKE ? || '-%')
+         AND length(name) >= 3 AND name NOT LIKE 'svr-%'
+       LIMIT 20`,
     )
-    .all(serverName) as LocalServerRow[];
+    .all(serverName, suffix) as LocalServerRow[];
+  const normalizedSuffix = normalizeOsNodeName(suffix).toLowerCase();
   // 同名重复行去重（本地表存在同名多行），保留信息最全的一条
   const byName = new Map<string, CiChainNode>();
   for (const r of rows) {
-    if (!byName.has(r.name)) {
-      byName.set(r.name, {
-        class: 'OsHost',
-        name: r.name,
-        relation: '操作系统层（Zabbix）',
-        ip: r.ip_address ?? undefined,
-        extra: r.os || undefined,
-      });
-    }
+    const matched = serverName.includes(`-${r.name}`) || normalizeOsNodeName(r.name).toLowerCase() === normalizedSuffix;
+    if (!matched || byName.has(r.name)) continue;
+    byName.set(r.name, {
+      class: 'OsHost',
+      name: r.name,
+      relation: '操作系统层（Zabbix）',
+      ip: r.ip_address ?? undefined,
+      extra: r.os || undefined,
+    });
   }
   return [...byName.values()];
 }
 
-/** OS 层主机 → 硬件服务器（本地反查，BMC 命名约定） */
+/** OS 层主机 → 硬件服务器（本地反查，BMC 命名约定；兼容遗留 -数字尾巴命名） */
 function localHardwareParents(osName: string): CiChainNode[] {
   const rows = db
     .prepare(
       `SELECT id, name FROM servers
-       WHERE name LIKE 'svr-MGMT-%' AND instr(name, '-' || ?) > 0
+       WHERE name LIKE 'svr-%' AND (instr(name, '-' || ?) > 0 OR instr(name, '-' || ?) > 0)
        LIMIT 3`,
     )
-    .all(osName) as { id: string; name: string }[];
+    .all(osName, normalizeOsNodeName(osName)) as { id: string; name: string }[];
   return rows.map(r => ({
     class: 'Server',
     name: r.name,
@@ -395,19 +405,27 @@ function resolveSlotDevice(deviceType: string, deviceId: string, deviceName: str
 /**
  * OS 层节点 → 数据库实例（children）
  * Zabbix gv_instance_map 中 host_name 命中该节点的 DB 主机，
- * 反查 iTop 中名称包含 DB 主机名的 DBServer CI（如 DB-ORA-10-CPCNRTN ⊃ CPCNRTN）。
+ * 反查 iTop 中名称包含 DB 主机技术名或可见名的 DBServer CI
+ * （技术名如 CPCNRTN ⊂ DB-ORA-10-CPCNRTN；可见名兜底如 DB-ORA-OBDB-ODBC ⊂ OBCP）。
  */
 async function osDbInstanceChildren(osName: string): Promise<CiChainNode[]> {
   const dbHosts = await findDbHostsByOsHost(osName);
   if (dbHosts.length === 0) return [];
-  const cond = dbHosts.map(m => `name LIKE '%${esc(m.zhost)}%'`).join(' OR ');
-  const rows = await listByOQL('DBServer', `SELECT DBServer WHERE ${cond}`, 'name,status');
+  const conds = new Set<string>();
+  for (const m of dbHosts) {
+    conds.add(`name LIKE '%${esc(m.zhost)}%'`);
+    if (m.zname && m.zname !== m.zhost) conds.add(`name LIKE '%${esc(m.zname)}%'`);
+  }
+  const rows = await listByOQL('DBServer', `SELECT DBServer WHERE ${[...conds].join(' OR ')}`, 'name,status');
   const byName = new Map<string, CiChainNode>();
   for (const m of dbHosts) {
     const instances = m.instances.map(i => i.instance_name).join('/');
+    const zhost = m.zhost.toLowerCase();
+    const zname = m.zname?.toLowerCase();
     for (const r of rows) {
       const dbsName = fieldStr(r.fields, 'name') ?? String(r.key);
-      if (!dbsName.toLowerCase().includes(m.zhost.toLowerCase())) continue;
+      const n = dbsName.toLowerCase();
+      if (!(zname && n.includes(zname)) && !n.includes(zhost)) continue;
       if (isStaleDbServer(fieldStr(r.fields, 'status'))) continue;
       if (!byName.has(dbsName)) {
         byName.set(dbsName, {
@@ -446,9 +464,20 @@ function normalizeStatusSafe(s?: string): string | undefined {
 
 
 async function osHostChain(osName: string): Promise<CiChain> {
-  const row = db.prepare('SELECT id, name, ip_address, os, os_type, description FROM servers WHERE name = ?').get(osName) as
+  let row = db.prepare('SELECT id, name, ip_address, os, os_type, description FROM servers WHERE name = ?').get(osName) as
     | (LocalServerRow & { os_type: string | null; description: string | null })
     | undefined;
+  // 容错：gv$instance 派生节点是真实主机名（obdb02），本地行可能是遗留 -数字尾巴命名
+  // （obdb02-197）——按归一化名兜底取信息最全的一条
+  if (!row) {
+    const candidates = db
+      .prepare(
+        `SELECT id, name, ip_address, os, os_type, description FROM servers
+         WHERE name LIKE ? || '-%' AND length(name) >= 3 AND name NOT LIKE 'svr-%' LIMIT 5`,
+      )
+      .all(osName) as (LocalServerRow & { os_type: string | null; description: string | null })[];
+    row = candidates.find(r => normalizeOsNodeName(r.name).toLowerCase() === normalizeOsNodeName(osName).toLowerCase());
+  }
 
   const parents = localHardwareParents(osName);
 
