@@ -129,7 +129,6 @@ interface CascadeLevel {
 export default function RackFrontView({ rack, slots, onClose }: Props) {
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<SlotInfo | null>(null);
-  const [copied, setCopied] = useState(false);
   // CI 关系级联列
   const [levels, setLevels] = useState<CascadeLevel[]>([]);
   const [ciLoading, setCiLoading] = useState(false);
@@ -192,15 +191,6 @@ export default function RackFrontView({ rack, slots, onClose }: Props) {
         { key, resp: null, error: msg },
       ]);
     }
-  };
-
-  const copyName = async () => {
-    if (!selected) return;
-    try {
-      await navigator.clipboard.writeText(selected.deviceName);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch { /* 剪贴板不可用时静默 */ }
   };
 
   return (
@@ -277,7 +267,7 @@ export default function RackFrontView({ rack, slots, onClose }: Props) {
                   return (
                     <div
                       key={i}
-                      onClick={() => { setSelected(sel ? null : s); setCopied(false); }}
+                      onClick={() => { setSelected(sel ? null : s); }}
                       style={{ height: h }}
                       className={`flex items-center gap-2 px-2 border-b border-black/20 last:border-b-0 border-l-2 cursor-pointer transition-all ${st.bg} ${st.bar} ${sel ? 'ring-1 ring-cyan-400/70' : ''} ${dim ? 'opacity-25' : 'hover:brightness-125'}`}
                       title={`U${s.startU}-U${s.endU} · ${s.deviceName}`}
@@ -307,46 +297,28 @@ export default function RackFrontView({ rack, slots, onClose }: Props) {
           </span>
         </div>
 
-        {/* 选中设备详情（CI 关系改在右侧级联列展示） */}
-        {selected && (
-          <div className="px-4 py-3 border-t border-cyan-500/30 bg-cyan-500/5 shrink-0">
-            <div className="flex items-center justify-between gap-2">
-              <p className="text-[12px] font-semibold text-white truncate flex-1 min-w-0">{selected.deviceName}</p>
-              <button
-                onClick={copyName}
-                className="text-[10px] px-2 py-1 rounded border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 transition-colors shrink-0"
-              >
-                {copied ? '已复制 ✓' : '复制名称'}
-              </button>
-            </div>
-            <div className="flex flex-wrap gap-x-4 gap-y-0.5 mt-1.5 text-[11px] text-slate-400">
-              <span>U 位：<span className="text-slate-200 font-mono">U{selected.startU}-U{selected.endU}</span>（{selected.endU - selected.startU + 1}U）</span>
-              <span>类型：<span className="text-slate-200">{(typeStyles[selected.deviceType] || typeStyles.other).label}</span></span>
-              <span>状态：<span className="text-slate-200">{selected.deviceStatus || 'unknown'}</span></span>
-              {selected.cpuUsage != null && <span>CPU：<span className="text-slate-200">{selected.cpuUsage}%</span></span>}
-              {selected.memUsage != null && <span>内存：<span className="text-slate-200">{selected.memUsage}%</span></span>}
-            </div>
-            <div className="mt-2 pt-2 border-t border-slate-700/30">
-              {ciLoading && <p className="text-[10px] text-slate-500 py-0.5">🔗 查询 CI 关系中…</p>}
-              {ciErr && <p className="text-[10px] text-red-400/80 py-0.5">✕ {ciErr}</p>}
-              {!ciLoading && !ciErr && levels.length > 0 && (
-                <p className="text-[10px] text-slate-500 py-0.5">🔗 CI 关系已在右侧级联展开 · 点击节点继续向右下钻</p>
-              )}
-            </div>
-          </div>
-        )}
+        {/* 选中设备详情已并入右侧第一级级联列：弹窗内点击设备不再出现任何新框 */}
       </div>
 
-      {/* CI 关系级联列：向右侧逐级展开（每列 = 一个对象的邻接关系） */}
-      {levels.length > 0 && (
+      {/* CI 关系级联列：点击设备后所有次级信息只向右侧逐级展开 */}
+      {selected && (
         <div className="absolute left-[412px] top-0 flex items-start gap-2 z-40">
-          {levels.map((lv, i) => (
+          {/* 第 0 列：选中设备信息卡 + 其邻接关系（加载/失败也在这一列内呈现） */}
+          <CiColumn
+            key="col-0"
+            lv={levels[0] ?? { key: 'pending:selected', resp: null, loading: ciLoading, error: ciErr }}
+            idx={0}
+            selectedInfo={selected}
+            onOpen={openNode}
+            onCloseCol={() => setSelected(null)}
+          />
+          {levels.slice(1).map((lv, i) => (
             <CiColumn
               key={lv.key}
               lv={lv}
-              idx={i}
+              idx={i + 1}
               onOpen={openNode}
-              onCloseCol={() => setLevels(prev => prev.slice(0, i))}
+              onCloseCol={() => setLevels(prev => prev.slice(0, i + 1))}
             />
           ))}
         </div>
@@ -357,15 +329,27 @@ export default function RackFrontView({ rack, slots, onClose }: Props) {
 
 /** 单个级联列：一个 CI 对象的邻接关系（↑上层 / ↓下层），点击行向右展开下一列 */
 function CiColumn({
-  lv, idx, onOpen, onCloseCol,
+  lv, idx, selectedInfo, onOpen, onCloseCol,
 }: {
   lv: CascadeLevel;
   idx: number;
+  /** 仅第 0 列传入：选中设备本体，信息卡替代 self 行 */
+  selectedInfo?: SlotInfo;
   onOpen: (levelIdx: number, node: CiChainNode) => void;
   onCloseCol: () => void;
 }) {
+  const [copied, setCopied] = useState(false);
   const resp = lv.resp;
   const hasRelations = resp ? resp.parents.length + resp.children.length > 0 : false;
+  const copyName = async () => {
+    const name = selectedInfo?.deviceName ?? resp?.self?.name;
+    if (!name) return;
+    try {
+      await navigator.clipboard.writeText(name);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch { /* 剪贴板不可用时静默 */ }
+  };
   return (
     <div className="w-[230px] max-h-[80vh] flex flex-col bg-[#0a1420]/95 backdrop-blur-xl border border-cyan-500/20 rounded-xl shadow-2xl shadow-cyan-500/5 overflow-hidden">
       {/* 列头 */}
@@ -379,12 +363,37 @@ function CiColumn({
 
       {/* 列体 */}
       <div className="overflow-y-auto py-1 flex-1 min-h-0">
+        {/* 第 0 列：选中设备信息卡（原弹窗底部详情面板已并入此处） */}
+        {idx === 0 && selectedInfo && (
+          <div className="mx-1.5 mt-1 mb-1 px-2 py-1.5 rounded bg-cyan-500/10 border border-cyan-500/25">
+            <div className="flex items-center gap-1.5">
+              <i className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusDot[selectedInfo.deviceStatus || 'unknown'] || 'bg-slate-500'}`} />
+              <span className="text-[9px] px-1 py-0.5 rounded bg-cyan-500/10 border border-cyan-500/20 text-cyan-300/80 shrink-0">
+                {(typeStyles[selectedInfo.deviceType] || typeStyles.other).label}
+              </span>
+              <button
+                onClick={copyName}
+                className="ml-auto text-[9px] px-1.5 py-0.5 rounded border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 transition-colors shrink-0"
+              >
+                {copied ? '已复制 ✓' : '复制名称'}
+              </button>
+            </div>
+            <p className="text-[11px] font-semibold text-white mt-1 leading-tight break-all">{selectedInfo.deviceName}</p>
+            <div className="flex flex-wrap gap-x-2 mt-0.5 text-[9px] text-slate-400">
+              <span className="font-mono text-slate-300">U{selectedInfo.startU}{selectedInfo.endU > selectedInfo.startU ? `-U${selectedInfo.endU}` : ''}</span>
+              <span>状态 {selectedInfo.deviceStatus || 'unknown'}</span>
+              {selectedInfo.cpuUsage != null && <span>CPU {selectedInfo.cpuUsage}%</span>}
+              {selectedInfo.memUsage != null && <span>内存 {selectedInfo.memUsage}%</span>}
+            </div>
+          </div>
+        )}
         {lv.loading && <p className="text-[10px] text-slate-500 px-3 py-2">查询中…</p>}
         {lv.error && <p className="text-[10px] text-red-400/80 px-3 py-2">✕ {lv.error}</p>}
         {resp && (
           <>
             {resp.degraded && <p className="text-[9px] text-orange-400/70 px-3 py-1">⚠ {resp.degraded}</p>}
-            {resp.self && (
+            {/* 第 0 列的信息卡已代表 self，仅深层列渲染 self 行 */}
+            {resp.self && idx !== 0 && (
               <div className="flex items-center gap-1.5 px-2 py-1.5 bg-cyan-500/5">
                 <i className={`w-1.5 h-1.5 rounded-full shrink-0 ${ciStatusDot(resp.self.status)}`} />
                 <span className="text-[9px] px-1 py-0.5 rounded bg-cyan-500/10 border border-cyan-500/20 text-cyan-300/80 shrink-0">
