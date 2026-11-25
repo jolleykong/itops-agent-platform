@@ -17,6 +17,7 @@
 import db from '../../../models/database';
 import { logger } from '../../../utils/logger';
 import { itopClient } from '../../cmdb-sync/services/itopClient';
+import { findDbHostsByOsHost, findDbHostsByDbServerName } from './zabbixDbMapService';
 
 // ============================================================
 // 类型
@@ -299,7 +300,14 @@ export async function getCiChain(params: {
     }
     case 'DBServer': {
       const host = fieldStr(f, 'system_id_friendlyname');
-      if (host) parents.push({ class: 'FunctionalCI', name: host, relation: '承载对象' });
+      // 占位符（未关联的 DBServer 全部指向 ZBX-DB-Host-Unassigned）不展示
+      if (host && host !== 'ZBX-DB-Host-Unassigned') parents.push({ class: 'FunctionalCI', name: host, relation: '承载对象' });
+      // Zabbix gv$instance 派生：DBServer → 其 RAC 全部 OS 节点（跨集群实例）
+      try {
+        parents.push(...(await dbServerOsParents(name)));
+      } catch (err) {
+        logger.warn(`ciChain dbServerOsParents failed for ${name}: ${(err as Error).message}`);
+      }
       break;
     }
     default:
@@ -367,15 +375,75 @@ function resolveSlotDevice(deviceType: string, deviceId: string, deviceName: str
 }
 
 // ============================================================
-// 本地虚拟类链
+// DB 层派生（Zabbix gv$instance → iTop DBServer）
 // ============================================================
 
-function osHostChain(osName: string): CiChain {
+/**
+ * OS 层节点 → 数据库实例（children）
+ * Zabbix gv_instance_map 中 host_name 命中该节点的 DB 主机，
+ * 反查 iTop 中名称包含 DB 主机名的 DBServer CI（如 DB-ORA-10-CPCNRTN ⊃ CPCNRTN）。
+ */
+async function osDbInstanceChildren(osName: string): Promise<CiChainNode[]> {
+  const dbHosts = await findDbHostsByOsHost(osName);
+  if (dbHosts.length === 0) return [];
+  const cond = dbHosts.map(m => `name LIKE '%${esc(m.zhost)}%'`).join(' OR ');
+  const rows = await listByOQL('DBServer', `SELECT DBServer WHERE ${cond}`, 'name,status');
+  const byName = new Map<string, CiChainNode>();
+  for (const m of dbHosts) {
+    const instances = m.instances.map(i => i.instance_name).join('/');
+    for (const r of rows) {
+      const dbsName = fieldStr(r.fields, 'name') ?? String(r.key);
+      if (!dbsName.toLowerCase().includes(m.zhost.toLowerCase())) continue;
+      if (!byName.has(dbsName)) {
+        byName.set(dbsName, {
+          class: 'DBServer',
+          name: dbsName,
+          relation: `数据库集群（实例 ${instances}）`,
+          status: normalizeStatusSafe(fieldStr(r.fields, 'status')),
+        });
+      }
+    }
+  }
+  return [...byName.values()];
+}
+
+/** iTop DBServer → OS 层节点（parents，反向派生；gv$instance 全集群实例跨节点） */
+async function dbServerOsParents(dbServerName: string): Promise<CiChainNode[]> {
+  const dbHosts = await findDbHostsByDbServerName(dbServerName);
+  const byName = new Map<string, CiChainNode>();
+  for (const m of dbHosts) {
+    for (const inst of m.instances) {
+      if (!byName.has(inst.host_name)) {
+        byName.set(inst.host_name, {
+          class: 'OsHost',
+          name: inst.host_name,
+          relation: `操作系统节点（${inst.instance_name}）`,
+        });
+      }
+    }
+  }
+  return [...byName.values()];
+}
+
+function normalizeStatusSafe(s?: string): string | undefined {
+  return s?.trim() || undefined;
+}
+
+
+async function osHostChain(osName: string): Promise<CiChain> {
   const row = db.prepare('SELECT id, name, ip_address, os, os_type, description FROM servers WHERE name = ?').get(osName) as
     | (LocalServerRow & { os_type: string | null; description: string | null })
     | undefined;
 
   const parents = localHardwareParents(osName);
+
+  // DB 层派生：该节点上运行的 Oracle 实例 → iTop DBServer CI（Zabbix gv$instance，失败静默为空）
+  let dbChildren: CiChainNode[] = [];
+  try {
+    dbChildren = await osDbInstanceChildren(osName);
+  } catch (err) {
+    logger.warn(`ciChain osDbInstanceChildren failed for ${osName}: ${(err as Error).message}`);
+  }
 
   // iTop：合并进 guest 的 OS 层标记（description 含 os-agent:{OS主机名}）
   return {
@@ -383,7 +451,7 @@ function osHostChain(osName: string): CiChain {
       ? { class: 'OsHost', name: row.name, ip: row.ip_address ?? undefined, extra: row.os || row.os_type || undefined }
       : null,
     parents,
-    children: [],
+    children: dbChildren,
     source: 'local',
     degraded: parents.length === 0 ? '本地未找到匹配的硬件服务器（BMC 命名约定未命中）' : undefined,
   };

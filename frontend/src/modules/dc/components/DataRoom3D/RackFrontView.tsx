@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import api from '../../../../lib/api';
 import type { Rack3D, SlotInfo } from './types';
+import type { DcScheme } from './theme';
 
 /** CI 关系链节点（后端 /dc/ci-chain 返回） */
 interface CiChainNode {
@@ -60,6 +61,7 @@ interface Props {
   rack: Rack3D;
   slots: SlotInfo[];
   onClose: () => void;
+  scheme: DcScheme;
 }
 
 /** 每个 U 位在立面图中的像素高度 */
@@ -75,15 +77,15 @@ function segHeight(seg: Segment): number {
   return Math.max((seg.top - seg.bottom + 1) * UH, DEVICE_MIN_H);
 }
 
-/** 设备类型 → 立面图配色（贴合 3D 页暗色主题） */
-const typeStyles: Record<string, { bg: string; bar: string; text: string; label: string }> = {
-  server: { bg: 'bg-sky-600/40', bar: 'border-l-sky-400', text: 'text-sky-100', label: '服务器' },
-  vm_host: { bg: 'bg-cyan-600/40', bar: 'border-l-cyan-400', text: 'text-cyan-100', label: '虚拟化宿主' },
-  network_device: { bg: 'bg-purple-600/40', bar: 'border-l-purple-400', text: 'text-purple-100', label: '网络设备' },
-  pdu: { bg: 'bg-orange-600/40', bar: 'border-l-orange-400', text: 'text-orange-100', label: 'PDU' },
-  ups: { bg: 'bg-orange-600/40', bar: 'border-l-orange-400', text: 'text-orange-100', label: 'UPS' },
-  storage: { bg: 'bg-green-600/40', bar: 'border-l-green-400', text: 'text-green-100', label: '存储' },
-  other: { bg: 'bg-slate-600/40', bar: 'border-l-slate-400', text: 'text-slate-200', label: '占位设备' },
+/** 设备类型 → 立面图配色；文字色按方案深浅动态取 */
+const typeStyles: Record<string, { bg: string; bar: string; textDark: string; textLight: string; label: string }> = {
+  server: { bg: 'bg-sky-600/40', bar: 'border-l-sky-400', textDark: '#e0f2fe', textLight: '#075985', label: '服务器' },
+  vm_host: { bg: 'bg-cyan-600/40', bar: 'border-l-cyan-400', textDark: '#cffafe', textLight: '#0e7490', label: '虚拟化宿主' },
+  network_device: { bg: 'bg-purple-600/40', bar: 'border-l-purple-400', textDark: '#f3e8ff', textLight: '#6b21a8', label: '网络设备' },
+  pdu: { bg: 'bg-orange-600/40', bar: 'border-l-orange-400', textDark: '#ffedd5', textLight: '#9a3412', label: 'PDU' },
+  ups: { bg: 'bg-orange-600/40', bar: 'border-l-orange-400', textDark: '#ffedd5', textLight: '#9a3412', label: 'UPS' },
+  storage: { bg: 'bg-green-600/40', bar: 'border-l-green-400', textDark: '#dcfce7', textLight: '#166534', label: '存储' },
+  other: { bg: 'bg-slate-600/40', bar: 'border-l-slate-400', textDark: '#f1f5f9', textLight: '#334155', label: '占位设备' },
 };
 
 const statusDot: Record<string, string> = {
@@ -116,7 +118,9 @@ function buildSegments(slots: SlotInfo[], totalU: number): Segment[] {
   return segs;
 }
 
-/** 级联列状态：levels[0] = 选中设备的关系；点击列内节点向右追加下一列 */
+/** 级联列状态：levels[0] = 选中设备；点击列内子节点向右追加下一列。
+ *  展示约定（2026-11-25 定稿）：每列只展示"本列自身信息卡 + 子层级"，
+ *  父层级只存在于左侧列（即之前的列），列内不再重复渲染父级行。 */
 interface CascadeLevel {
   key: string;
   resp: CiChainResp | null;
@@ -124,9 +128,11 @@ interface CascadeLevel {
   error?: string;
   /** 本列当前展开的节点键（class:name），用于高亮与收起判断 */
   activeKey?: string;
+  /** 打开本列时点击的节点（idx>0 时即本列自身；resp 未返回前信息卡用它占位） */
+  node?: CiChainNode;
 }
 
-export default function RackFrontView({ rack, slots, onClose }: Props) {
+export default function RackFrontView({ rack, slots, onClose, scheme }: Props) {
   const [query, setQuery] = useState('');
   const [selected, setSelected] = useState<SlotInfo | null>(null);
   // CI 关系级联列
@@ -164,7 +170,7 @@ export default function RackFrontView({ rack, slots, onClose }: Props) {
     return () => { cancelled = true; };
   }, [selected]);
 
-  /** 点击级联节点：已展开 → 收起；否则加载并替换其右侧所有列（逐级下钻） */
+  /** 点击级联子节点：已展开 → 收起；否则加载并替换其右侧所有列（逐级下钻） */
   const openNode = async (levelIdx: number, node: CiChainNode) => {
     const key = `${node.class}:${node.name}`;
     const cur = levels[levelIdx];
@@ -174,46 +180,66 @@ export default function RackFrontView({ rack, slots, onClose }: Props) {
       return;
     }
     const marked = levels.slice(0, levelIdx + 1).map((lv, i) => (i === levelIdx ? { ...lv, activeKey: key } : lv));
-    setLevels([...marked, { key: `pending:${key}`, resp: null, loading: true }]);
+    setLevels([...marked, { key: `pending:${key}`, resp: null, loading: true, node }]);
     try {
       const { data } = await api.get('/dc/ci-chain', { params: { class: node.class, name: node.name } });
       const resp = unwrapCiResp(data);
       setLevels(prev => {
         const base = prev.slice(0, levelIdx + 1).map((lv, i) => (i === levelIdx ? { ...lv, activeKey: key } : lv));
         return resp
-          ? [...base, { key, resp }]
-          : [...base, { key, resp: null, error: '未找到对应 CI 对象' }];
+          ? [...base, { key, resp, node }]
+          : [...base, { key, resp: null, error: '未找到对应 CI 对象', node }];
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : 'CI 关系查询失败';
       setLevels(prev => [
         ...prev.slice(0, levelIdx + 1).map((lv, i) => (i === levelIdx ? { ...lv, activeKey: key } : lv)),
-        { key, resp: null, error: msg },
+        { key, resp: null, error: msg, node },
       ]);
     }
+  };
+
+  /** 层级链（根机柜 → 本列自身，含端点），供「复制层级」使用 */
+  const chainFor = (idx: number): string[] => {
+    const chain = [rack.name];
+    if (selected) chain.push(selected.deviceName);
+    for (const lv of levels.slice(1, idx + 1)) {
+      const n = lv.resp?.self?.name ?? lv.node?.name;
+      if (n) chain.push(n);
+    }
+    return chain;
+  };
+
+  /** 设备类型 → 文字色（按方案深浅） */
+  const typeText = (t: string) => {
+    const st = typeStyles[t] || typeStyles.other;
+    return scheme.dark ? st.textDark : st.textLight;
   };
 
   return (
     <div className="absolute left-4 top-1/2 -translate-y-1/2 z-30">
       {/* 主弹窗（级联列渲染在其右侧，因此外层不再裁剪溢出） */}
-      <div className="w-[400px] max-h-[88vh] flex flex-col bg-[#0a1420]/95 backdrop-blur-xl border border-cyan-500/20 rounded-xl shadow-2xl shadow-cyan-500/5 overflow-hidden transition-all duration-300">
+      <div
+        className="w-[400px] max-h-[88vh] flex flex-col backdrop-blur-xl rounded-xl shadow-2xl overflow-hidden transition-all duration-300"
+        style={{ background: scheme.modalBg, border: `1px solid ${scheme.modalBorder}` }}
+      >
         {/* 头部 */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-gray-700/30 shrink-0">
+        <div className="flex items-center justify-between px-4 py-3 border-b shrink-0" style={{ borderColor: scheme.freeSegBg }}>
           <div>
-            <h3 className="text-sm font-bold text-white">{rack.name}</h3>
-            <p className="text-[10px] text-slate-500 mt-0.5">
+            <h3 className="text-sm font-bold" style={{ color: scheme.text }}>{rack.name}</h3>
+            <p className="text-[10px] mt-0.5" style={{ color: scheme.modalTextMuted }}>
               {rack.usedU}/{totalU}U · {usagePercent}% 已用 · {slots.length} 台设备
             </p>
           </div>
-          <button onClick={onClose} className="text-slate-500 hover:text-white transition-colors text-lg leading-none">✕</button>
+          <button onClick={onClose} className="transition-colors text-lg leading-none" style={{ color: scheme.modalTextMuted }}>✕</button>
         </div>
 
         {/* 占用进度条 */}
         <div className="px-4 pt-2 shrink-0">
-          <div className="w-full h-1.5 bg-gray-800 rounded-full overflow-hidden">
+          <div className="w-full h-1.5 rounded-full overflow-hidden" style={{ background: scheme.barTrack }}>
             <div
-              className={`h-full rounded-full transition-all duration-500 ${usagePercent > 80 ? 'bg-orange-500' : usagePercent > 60 ? 'bg-yellow-500' : 'bg-cyan-500'}`}
-              style={{ width: `${usagePercent}%` }}
+              className="h-full rounded-full transition-all duration-500"
+              style={{ width: `${usagePercent}%`, background: usagePercent > 80 ? scheme.danger : usagePercent > 60 ? scheme.warn : scheme.accent }}
             />
           </div>
         </div>
@@ -224,18 +250,23 @@ export default function RackFrontView({ rack, slots, onClose }: Props) {
             value={query}
             onChange={e => setQuery(e.target.value)}
             placeholder="搜索设备名定位 U 位…"
-            className="w-full bg-white/5 border border-gray-700/40 rounded-lg px-3 py-1.5 text-[12px] text-white placeholder:text-slate-600 outline-none focus:border-cyan-500/40 transition-colors"
+            className="w-full rounded-lg px-3 py-1.5 text-[12px] outline-none transition-colors"
+            style={{
+              background: scheme.inputBg,
+              border: `1px solid ${scheme.surfaceBorder}`,
+              color: scheme.text,
+            }}
           />
         </div>
 
         {/* 立面图主体：U 标签列 + 分段 */}
         <div className="overflow-y-auto px-4 pb-2 flex-1 min-h-0">
           {slots.length === 0 ? (
-            <p className="text-[11px] text-slate-600 text-center py-8">该机柜暂无设备信息</p>
+            <p className="text-[11px] text-center py-8" style={{ color: scheme.modalTextMuted }}>该机柜暂无设备信息</p>
           ) : (
             <div className="flex">
               {/* U 位标尺（顶=U{totalU}，底=U1；高度与分段渲染一致） */}
-              <div className="w-9 shrink-0 font-mono text-[10px] text-slate-600 text-right pr-1.5 select-none">
+              <div className="w-9 shrink-0 font-mono text-[10px] text-right pr-1.5 select-none" style={{ color: scheme.modalTextMuted }}>
                 {segments.map((seg, i) => (
                   <div key={i} style={{ height: segHeight(seg) }} className="leading-none flex items-end justify-end pb-0.5">
                     U{seg.top}
@@ -243,18 +274,18 @@ export default function RackFrontView({ rack, slots, onClose }: Props) {
                 ))}
               </div>
               {/* 机柜体 */}
-              <div className="flex-1 min-w-0 border border-slate-600/40 rounded overflow-hidden">
+              <div className="flex-1 min-w-0 rounded overflow-hidden" style={{ border: `1px solid ${scheme.surfaceBorder}` }}>
                 {segments.map((seg, i) => {
                   const h = segHeight(seg);
                   if (!seg.slot) {
                     return (
                       <div
                         key={i}
-                        style={{ height: h }}
-                        className="flex items-center px-2 bg-white/[0.03] border-b border-slate-700/30 last:border-b-0"
+                        style={{ height: h, background: scheme.freeSegBg, borderBottom: `1px solid ${scheme.freeSegBg}` }}
+                        className="flex items-center px-2"
                         title={`空闲 U${seg.bottom}-U${seg.top}（${seg.top - seg.bottom + 1}U，已压缩显示）`}
                       >
-                        <span className="text-[9px] text-slate-600 truncate">
+                        <span className="text-[9px] truncate" style={{ color: scheme.modalTextMuted }}>
                           {seg.top - seg.bottom + 1 > 1 ? `空闲 U${seg.bottom}-${seg.top}` : '空闲'}
                         </span>
                       </div>
@@ -268,12 +299,21 @@ export default function RackFrontView({ rack, slots, onClose }: Props) {
                     <div
                       key={i}
                       onClick={() => { setSelected(sel ? null : s); }}
-                      style={{ height: h }}
-                      className={`flex items-center gap-2 px-2 border-b border-black/20 last:border-b-0 border-l-2 cursor-pointer transition-all ${st.bg} ${st.bar} ${sel ? 'ring-1 ring-cyan-400/70' : ''} ${dim ? 'opacity-25' : 'hover:brightness-125'}`}
+                      style={{
+                        height: h,
+                        color: typeText(s.deviceType),
+                        borderBottom: `1px solid rgba(0,0,0,0.2)`,
+                        borderLeftWidth: 2,
+                        boxShadow: sel ? `0 0 0 1px ${scheme.accent}` : undefined,
+                        opacity: dim ? 0.25 : 1,
+                      }}
+                      className={`flex items-center gap-2 px-2 cursor-pointer transition-all ${st.bg} ${st.bar} ${dim ? '' : 'hover:brightness-125'}`}
                       title={`U${s.startU}-U${s.endU} · ${s.deviceName}`}
                     >
-                      <span className={`text-[12px] font-medium truncate flex-1 min-w-0 ${st.text}`}>{s.deviceName || '(未命名设备)'}</span>
-                      <span className="text-[9px] font-mono text-slate-400/70 shrink-0">U{s.startU}{s.endU > s.startU ? `-${s.endU}` : ''}</span>
+                      <span className="text-[12px] font-medium truncate flex-1 min-w-0">{s.deviceName || '(未命名设备)'}</span>
+                      <span className="text-[9px] font-mono shrink-0" style={{ color: scheme.modalTextMuted }}>
+                        U{s.startU}{s.endU > s.startU ? `-${s.endU}` : ''}
+                      </span>
                       <i className={`w-2 h-2 rounded-full shrink-0 ${statusDot[s.deviceStatus || 'unknown'] || 'bg-slate-500'}`} />
                     </div>
                   );
@@ -284,41 +324,45 @@ export default function RackFrontView({ rack, slots, onClose }: Props) {
         </div>
 
         {/* 图例 */}
-        <div className="px-4 py-2 border-t border-gray-700/30 shrink-0 flex flex-wrap gap-x-3 gap-y-1">
+        <div className="px-4 py-2 border-t shrink-0 flex flex-wrap gap-x-3 gap-y-1" style={{ borderColor: scheme.freeSegBg }}>
           {(['server', 'network_device', 'storage', 'other'] as const).map(t => (
-            <span key={t} className="flex items-center gap-1.5 text-[10px] text-slate-500">
+            <span key={t} className="flex items-center gap-1.5 text-[10px]" style={{ color: scheme.modalTextMuted }}>
               <i className={`w-2.5 h-2.5 rounded-sm ${typeStyles[t].bg} border-l-2 ${typeStyles[t].bar}`} />
               {typeStyles[t].label}
             </span>
           ))}
-          <span className="flex items-center gap-1.5 text-[10px] text-slate-500">
-            <i className="w-2.5 h-2.5 rounded-sm bg-white/[0.06] border border-dashed border-slate-600" />
+          <span className="flex items-center gap-1.5 text-[10px]" style={{ color: scheme.modalTextMuted }}>
+            <i className="w-2.5 h-2.5 rounded-sm" style={{ background: scheme.freeSegBg, border: `1px dashed ${scheme.modalTextMuted}` }} />
             空闲 U（已压缩）
           </span>
         </div>
 
-        {/* 选中设备详情已并入右侧第一级级联列：弹窗内点击设备不再出现任何新框 */}
+        {/* 选中设备详情 = 右侧第 0 列信息卡 */}
       </div>
 
-      {/* CI 关系级联列：点击设备后所有次级信息只向右侧逐级展开 */}
+      {/* CI 关系级联列：点击设备后所有次级信息只向右侧逐级展开；父层级只存在于左侧列 */}
       {selected && (
         <div className="absolute left-[412px] top-0 flex items-start gap-2 z-40">
-          {/* 第 0 列：选中设备信息卡 + 其邻接关系（加载/失败也在这一列内呈现） */}
+          {/* 第 0 列：选中设备信息卡 + 其子层级 */}
           <CiColumn
             key="col-0"
             lv={levels[0] ?? { key: 'pending:selected', resp: null, loading: ciLoading, error: ciErr }}
             idx={0}
             selectedInfo={selected}
+            hierarchy={chainFor(0)}
             onOpen={openNode}
             onCloseCol={() => setSelected(null)}
+            scheme={scheme}
           />
           {levels.slice(1).map((lv, i) => (
             <CiColumn
               key={lv.key}
               lv={lv}
               idx={i + 1}
+              hierarchy={chainFor(i + 1)}
               onOpen={openNode}
               onCloseCol={() => setLevels(prev => prev.slice(0, i + 1))}
+              scheme={scheme}
             />
           ))}
         </div>
@@ -327,109 +371,138 @@ export default function RackFrontView({ rack, slots, onClose }: Props) {
   );
 }
 
-/** 单个级联列：一个 CI 对象的邻接关系（↑上层 / ↓下层），点击行向右展开下一列 */
+/** 单个级联列：本列自身信息卡（显著高亮当前层级）+ 子层级行；点击行向右展开下一列。
+ *  父层级不再在列内渲染——它就是左侧的列。 */
 function CiColumn({
-  lv, idx, selectedInfo, onOpen, onCloseCol,
+  lv, idx, selectedInfo, hierarchy, onOpen, onCloseCol, scheme,
 }: {
   lv: CascadeLevel;
   idx: number;
-  /** 仅第 0 列传入：选中设备本体，信息卡替代 self 行 */
+  /** 仅第 0 列传入：选中设备本体 */
   selectedInfo?: SlotInfo;
+  /** 根层级 → 本列自身的名称链（复制层级用） */
+  hierarchy: string[];
   onOpen: (levelIdx: number, node: CiChainNode) => void;
   onCloseCol: () => void;
+  scheme: DcScheme;
 }) {
   const [copied, setCopied] = useState(false);
+  const [copiedChain, setCopiedChain] = useState(false);
   const resp = lv.resp;
-  /** 深层列过滤"回指"关系：本列对象来自上一列点击，上一列对象（即本列 key）不再重复展示 */
-  const excludeKey = idx > 0 ? lv.key : undefined;
-  const visibleParents = resp ? resp.parents.filter(p => `${p.class}:${p.name}` !== excludeKey) : [];
-  const visibleChildren = resp ? resp.children.filter(c => `${c.class}:${c.name}` !== excludeKey) : [];
-  const hasRelations = visibleParents.length + visibleChildren.length > 0;
+  const visibleChildren = resp ? resp.children : [];
+
+  /** 本列自身节点信息：第 0 列 = 选中设备；深层列 = resp.self（未返回时用点击节点占位） */
+  const selfName = idx === 0 ? selectedInfo?.deviceName : resp?.self?.name ?? lv.node?.name;
+  const selfClass = idx === 0 ? 'Server' : resp?.self?.class ?? lv.node?.class ?? '';
+  const selfStatus = idx === 0 ? selectedInfo?.deviceStatus : resp?.self?.status ?? lv.node?.status;
+  const selfTypeLabel = idx === 0
+    ? (typeStyles[selectedInfo?.deviceType ?? ''] || typeStyles.other).label
+    : ciClassLabel[selfClass] || selfClass || 'CI 对象';
+
   const copyName = async () => {
-    const name = selectedInfo?.deviceName ?? resp?.self?.name;
-    if (!name) return;
+    if (!selfName) return;
     try {
-      await navigator.clipboard.writeText(name);
+      await navigator.clipboard.writeText(selfName);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch { /* 剪贴板不可用时静默 */ }
   };
+
+  /** 复制根层级 → 本层层级的链路文本（如 LGY-2-6 > svr-MGMT-… > zydb81） */
+  const copyChain = async () => {
+    if (hierarchy.length === 0) return;
+    try {
+      await navigator.clipboard.writeText(hierarchy.join(' > '));
+      setCopiedChain(true);
+      setTimeout(() => setCopiedChain(false), 1500);
+    } catch { /* 剪贴板不可用时静默 */ }
+  };
+
   return (
-    <div className="w-[230px] max-h-[80vh] flex flex-col bg-[#0a1420]/95 backdrop-blur-xl border border-cyan-500/20 rounded-xl shadow-2xl shadow-cyan-500/5 overflow-hidden">
+    <div
+      className="w-[230px] max-h-[80vh] flex flex-col backdrop-blur-xl rounded-xl shadow-2xl overflow-hidden"
+      style={{ background: scheme.modalBg, border: `1px solid ${scheme.modalBorder}` }}
+    >
       {/* 列头 */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-gray-700/30 shrink-0">
-        <p className="text-[10px] text-slate-400 tracking-wide">
+      <div className="flex items-center justify-between px-3 py-2 border-b shrink-0" style={{ borderColor: scheme.freeSegBg }}>
+        <p className="text-[10px] tracking-wide" style={{ color: scheme.modalTextMuted }}>
           {idx === 0 ? '🔗 CI 关系' : `第 ${idx + 1} 级`}
-          {resp?.source === 'local' && <span className="text-slate-600"> · 本地</span>}
+          {resp?.source === 'local' && <span> · 本地</span>}
         </p>
-        <button onClick={onCloseCol} className="text-slate-500 hover:text-white transition-colors text-xs leading-none" title={idx === 0 ? '关闭 CI 面板' : '收起此级'}>✕</button>
+        <button onClick={onCloseCol} className="transition-colors text-xs leading-none" style={{ color: scheme.modalTextMuted }} title={idx === 0 ? '关闭 CI 面板' : '收起此级'}>✕</button>
       </div>
 
       {/* 列体 */}
       <div className="overflow-y-auto py-1 flex-1 min-h-0">
-        {/* 第 0 列：选中设备信息卡（原弹窗底部详情面板已并入此处） */}
-        {idx === 0 && selectedInfo && (
-          <div className="mx-1.5 mt-1 mb-1 px-2 py-1.5 rounded bg-cyan-500/10 border border-cyan-500/25">
+        {/* 本列自身信息卡：显著展示当前层级（每列都有，替代旧的 self 行） */}
+        {selfName && (
+          <div
+            className="mx-1.5 mt-1 mb-1 px-2 py-1.5 rounded"
+            style={{ background: `rgba(${scheme.accentRgb},0.12)`, border: `1px solid rgba(${scheme.accentRgb},0.4)` }}
+          >
             <div className="flex items-center gap-1.5">
-              <i className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusDot[selectedInfo.deviceStatus || 'unknown'] || 'bg-slate-500'}`} />
-              <span className="text-[9px] px-1 py-0.5 rounded bg-cyan-500/10 border border-cyan-500/20 text-cyan-300/80 shrink-0">
-                {(typeStyles[selectedInfo.deviceType] || typeStyles.other).label}
+              <i className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusDot[selfStatus || 'unknown'] || 'bg-slate-500'}`} />
+              <span
+                className="text-[9px] px-1 py-0.5 rounded shrink-0"
+                style={{ background: `rgba(${scheme.accentRgb},0.12)`, border: `1px solid rgba(${scheme.accentRgb},0.25)`, color: scheme.accent }}
+              >
+                {selfTypeLabel}
               </span>
               <button
                 onClick={copyName}
-                className="ml-auto text-[9px] px-1.5 py-0.5 rounded border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 transition-colors shrink-0"
+                className="ml-auto text-[9px] px-1.5 py-0.5 rounded transition-colors shrink-0"
+                style={{ border: `1px solid rgba(${scheme.accentRgb},0.4)`, color: scheme.accent, background: 'transparent' }}
+                title="复制当前设备名称"
               >
                 {copied ? '已复制 ✓' : '复制名称'}
               </button>
             </div>
-            <p className="text-[11px] font-semibold text-white mt-1 leading-tight break-all">{selectedInfo.deviceName}</p>
-            <div className="flex flex-wrap gap-x-2 mt-0.5 text-[9px] text-slate-400">
-              <span className="font-mono text-slate-300">U{selectedInfo.startU}{selectedInfo.endU > selectedInfo.startU ? `-U${selectedInfo.endU}` : ''}</span>
-              <span>状态 {selectedInfo.deviceStatus || 'unknown'}</span>
-              {selectedInfo.cpuUsage != null && <span>CPU {selectedInfo.cpuUsage}%</span>}
-              {selectedInfo.memUsage != null && <span>内存 {selectedInfo.memUsage}%</span>}
+            <p className="text-[11px] font-semibold mt-1 leading-tight break-all" style={{ color: scheme.text }}>{selfName}</p>
+            <div className="flex flex-wrap items-center gap-x-2 mt-0.5 text-[9px]" style={{ color: scheme.modalTextMuted }}>
+              {idx === 0 && selectedInfo && (
+                <>
+                  <span className="font-mono" style={{ color: scheme.text }}>
+                    U{selectedInfo.startU}{selectedInfo.endU > selectedInfo.startU ? `-U${selectedInfo.endU}` : ''}
+                  </span>
+                  {selectedInfo.cpuUsage != null && <span>CPU {selectedInfo.cpuUsage}%</span>}
+                  {selectedInfo.memUsage != null && <span>内存 {selectedInfo.memUsage}%</span>}
+                </>
+              )}
+              <button
+                onClick={copyChain}
+                className="ml-auto text-[9px] px-1.5 py-0.5 rounded transition-colors"
+                style={{ border: `1px dashed rgba(${scheme.accentRgb},0.4)`, color: scheme.accent, background: 'transparent' }}
+                title="复制从根层级（机柜）到当前层级的链路文本"
+              >
+                {copiedChain ? '已复制 ✓' : '复制层级'}
+              </button>
             </div>
+            {hierarchy.length > 1 && (
+              <p className="text-[8px] mt-1 leading-tight break-all opacity-70" style={{ color: scheme.modalTextMuted }} title={hierarchy.join(' > ')}>
+                {hierarchy.join(' > ')}
+              </p>
+            )}
           </div>
         )}
-        {lv.loading && <p className="text-[10px] text-slate-500 px-3 py-2">查询中…</p>}
-        {lv.error && <p className="text-[10px] text-red-400/80 px-3 py-2">✕ {lv.error}</p>}
+        {lv.loading && <p className="text-[10px] px-3 py-2" style={{ color: scheme.modalTextMuted }}>查询中…</p>}
+        {lv.error && <p className="text-[10px] px-3 py-2" style={{ color: scheme.danger }}>✕ {lv.error}</p>}
         {resp && (
           <>
-            {resp.degraded && <p className="text-[9px] text-orange-400/70 px-3 py-1">⚠ {resp.degraded}</p>}
-            {/* 第 0 列的信息卡已代表 self，仅深层列渲染 self 行 */}
-            {resp.self && idx !== 0 && (
-              <div className="flex items-center gap-1.5 px-2 py-1.5 bg-cyan-500/5">
-                <i className={`w-1.5 h-1.5 rounded-full shrink-0 ${ciStatusDot(resp.self.status)}`} />
-                <span className="text-[9px] px-1 py-0.5 rounded bg-cyan-500/10 border border-cyan-500/20 text-cyan-300/80 shrink-0">
-                  {ciClassLabel[resp.self.class] || resp.self.class}
-                </span>
-                <span className="text-[11px] text-slate-100 truncate flex-1 min-w-0" title={resp.self.name}>{resp.self.name}</span>
-              </div>
-            )}
-            {visibleParents.map((p, i) => {
-              const key = `${p.class}:${p.name}`;
-              return (
-                <CiRow
-                  key={`p-${i}`}
-                  node={{ ...p, relation: `↑ ${p.relation}` }}
-                  active={lv.activeKey === key}
-                  onClick={() => onOpen(idx, p)}
-                />
-              );
-            })}
+            {resp.degraded && <p className="text-[9px] px-3 py-1" style={{ color: scheme.warn }}>⚠ {resp.degraded}</p>}
             {visibleChildren.map((c, i) => {
               const key = `${c.class}:${c.name}`;
               return (
                 <CiRow
                   key={`c-${i}`}
-                  node={{ ...c, relation: `↓ ${c.relation}` }}
+                  node={c}
                   active={lv.activeKey === key}
                   onClick={() => onOpen(idx, c)}
+                  scheme={scheme}
                 />
               );
             })}
-            {!hasRelations && (
-              <p className="text-[10px] text-slate-600 px-3 py-2">无关联 CI 对象</p>
+            {visibleChildren.length === 0 && !lv.loading && (
+              <p className="text-[10px] px-3 py-2" style={{ color: scheme.modalTextMuted }}>无下层 CI 对象</p>
             )}
           </>
         )}
@@ -438,22 +511,28 @@ function CiColumn({
   );
 }
 
-/** 级联列中的节点行：点击向右展开其邻接关系 */
-function CiRow({ node, active, onClick }: { node: CiChainNode; active: boolean; onClick: () => void }) {
+/** 级联列中的子层级行：点击向右展开其邻接关系 */
+function CiRow({ node, active, onClick, scheme }: { node: CiChainNode; active: boolean; onClick: () => void; scheme: DcScheme }) {
   return (
     <div
       onClick={onClick}
-      className={`flex items-center gap-1.5 px-2 py-1.5 cursor-pointer transition-colors ${active ? 'bg-cyan-500/15' : 'hover:bg-white/5'}`}
+      className="flex items-center gap-1.5 px-2 py-1.5 cursor-pointer transition-colors"
+      style={{ background: active ? `rgba(${scheme.accentRgb},0.15)` : undefined }}
       title={`${node.relation} · ${node.name}（点击${active ? '收起' : '展开'}）`}
+      onMouseEnter={e => { if (!active) e.currentTarget.style.background = scheme.freeSegBg; }}
+      onMouseLeave={e => { if (!active) e.currentTarget.style.background = 'transparent'; }}
     >
-      <span className={`w-3 text-[9px] shrink-0 text-center ${active ? 'text-cyan-400' : 'text-slate-500'}`}>{active ? '▾' : '▸'}</span>
+      <span className="w-3 text-[9px] shrink-0 text-center" style={{ color: active ? scheme.accent : scheme.modalTextMuted }}>{active ? '▾' : '▸'}</span>
       <i className={`w-1.5 h-1.5 rounded-full shrink-0 ${ciStatusDot(node.status)}`} />
-      <span className="text-[9px] px-1 py-0.5 rounded bg-cyan-500/10 border border-cyan-500/20 text-cyan-300/80 shrink-0">
+      <span
+        className="text-[9px] px-1 py-0.5 rounded shrink-0"
+        style={{ background: `rgba(${scheme.accentRgb},0.1)`, border: `1px solid rgba(${scheme.accentRgb},0.2)`, color: scheme.accent }}
+      >
         {ciClassLabel[node.class] || node.class}
       </span>
       <div className="flex-1 min-w-0">
-        <p className="text-[11px] text-slate-200 truncate leading-tight" title={node.name}>{node.name}</p>
-        <p className="text-[9px] text-slate-500 truncate leading-tight">{node.relation}{node.ip ? ` · ${node.ip}` : ''}</p>
+        <p className="text-[11px] truncate leading-tight" style={{ color: scheme.text }} title={node.name}>{node.name}</p>
+        <p className="text-[9px] truncate leading-tight" style={{ color: scheme.modalTextMuted }}>{node.relation}{node.ip ? ` · ${node.ip}` : ''}</p>
       </div>
     </div>
   );

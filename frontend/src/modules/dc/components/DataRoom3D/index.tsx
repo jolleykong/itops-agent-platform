@@ -4,6 +4,7 @@ import DashboardOverlay from './DashboardOverlay';
 import RackFrontView from './RackFrontView';
 import Room2DView from './Room2DView';
 import useDataRoom from './useDataRoom';
+import { getSchemeByKey, readColorSchemeKey, writeColorSchemeKey } from './theme';
 import type { ViewMode } from './Scene';
 
 // 3D 场景懒加载：默认纯 2D 模式下不加载 three.js（省体积也省 GPU）
@@ -43,6 +44,9 @@ export default function DataRoom3D() {
   const [viewMode, setViewMode] = useState<ViewMode>('overview');
   // 3D 模式开关：默认关闭（纯 2D 平面视图），开启后挂载 Three.js 场景；偏好持久化
   const [threeDEnabled, setThreeDEnabled] = useState<boolean>(read3DEnabled);
+  // 色彩方案：localStorage 持久化，默认深海蓝
+  const [schemeKey, setSchemeKey] = useState<string>(readColorSchemeKey);
+  const scheme = useMemo(() => getSchemeByKey(schemeKey), [schemeKey]);
 
   const handleToggle3D = useCallback(() => {
     setThreeDEnabled(prev => {
@@ -54,6 +58,11 @@ export default function DataRoom3D() {
       }
       return next;
     });
+  }, []);
+
+  const handleChangeScheme = useCallback((key: string) => {
+    setSchemeKey(key);
+    writeColorSchemeKey(key);
   }, []);
 
   useEffect(() => {
@@ -112,47 +121,46 @@ export default function DataRoom3D() {
 
   if (loading) {
     return (
-      <div className="w-full h-full flex items-center justify-center bg-[#0a1520]">
+      <div className="w-full h-full flex items-center justify-center" style={{ background: scheme.bg }}>
         <div className="flex flex-col items-center gap-4">
           <div className="relative w-20 h-20">
-            <div className="absolute inset-0 border-2 border-t-[#00f5ff] border-r-[#00f5ff] rounded-full animate-spin" />
-            <div className="absolute inset-2 border-2 border-b-[#00ff88] border-l-[#00ff88] rounded-full animate-spin-reverse" />
+            <div className="absolute inset-0 border-2 rounded-full animate-spin"
+              style={{ borderTopColor: scheme.accent, borderRightColor: scheme.accent, borderColor: `rgba(${scheme.accentRgb},0.15)` }} />
+            <div className="absolute inset-2 border-2 rounded-full animate-spin-reverse"
+              style={{ borderBottomColor: scheme.ok, borderLeftColor: scheme.ok, borderColor: `rgba(${scheme.okRgb},0.15)` }} />
             <div className="absolute inset-4 flex items-center justify-center">
-              <span className="text-2xl text-[#00f5ff]">◆</span>
+              <span className="text-2xl" style={{ color: scheme.accent }}>◆</span>
             </div>
           </div>
-          <span className="text-sm text-[#5a7a94] tracking-[4px]">系统加载中</span>
+          <span className="text-sm tracking-[4px]" style={{ color: scheme.muted }}>系统加载中</span>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="w-full h-full relative bg-[#0a1520] overflow-hidden"
-      style={{
-        backgroundImage:
-          'radial-gradient(ellipse at 20% 50%, rgba(0,80,150,0.08) 0%, transparent 60%), radial-gradient(ellipse at 80% 30%, rgba(123,97,255,0.05) 0%, transparent 60%)',
-      }}>
+    <div className="w-full h-full relative overflow-hidden" style={{ background: scheme.bg, backgroundImage: scheme.glow }}>
       <div className="absolute inset-0 pointer-events-none z-0"
         style={{
-          backgroundImage:
-            'linear-gradient(rgba(0,245,255,0.015) 1px, transparent 1px), linear-gradient(90deg, rgba(0,245,255,0.015) 1px, transparent 1px)',
+          backgroundImage: `linear-gradient(${scheme.grid} 1px, transparent 1px), linear-gradient(90deg, ${scheme.grid} 1px, transparent 1px)`,
           backgroundSize: '50px 50px',
         }}
       />
 
       <div className="absolute inset-0 z-10"
         style={{
-          background: 'linear-gradient(135deg, #142030 0%, #1a2a3a 50%, #142030 100%)',
-          border: '1px solid rgba(0,245,255,0.15)',
+          background: scheme.panelGradient,
+          border: `1px solid ${scheme.panelBorder}`,
           borderRadius: '14px',
           overflow: 'hidden',
           margin: '8px',
-          boxShadow: '0 4px 20px rgba(0,0,0,0.5), inset 0 0 30px rgba(0,212,255,0.03)',
+          boxShadow: scheme.panelShadow,
         }}>
         {threeDEnabled ? (
           <Suspense fallback={null}>
+            {/* scheme.key 作为 key：切换配色时重建场景，让 3D 材质/背景套用新方案 */}
             <Scene
+              key={`scene-${schemeKey}`}
               racks={filteredRacks}
               onRackClick={handleRackClick}
               selectedRackId={selectedRack?.id || null}
@@ -160,6 +168,7 @@ export default function DataRoom3D() {
               onHoverChange={handleHoverChange}
               heatmapData={heatmapData}
               viewMode={viewMode}
+              scheme={scheme}
             />
           </Suspense>
         ) : (
@@ -169,6 +178,7 @@ export default function DataRoom3D() {
             selectedRackId={selectedRack?.id || null}
             hoveredRackId={hoveredRackId}
             onHoverChange={handleHoverChange}
+            scheme={scheme}
           />
         )}
       </div>
@@ -183,9 +193,11 @@ export default function DataRoom3D() {
         searchQuery={searchQuery}
         viewMode={viewMode}
         threeDEnabled={threeDEnabled}
+        scheme={scheme}
         onSearchChange={setSearchQuery}
         onViewModeChange={setViewMode}
         onToggle3D={handleToggle3D}
+        onSchemeChange={handleChangeScheme}
         onNavigateDC={handleNavigateDC}
       />
 
@@ -194,16 +206,9 @@ export default function DataRoom3D() {
           rack={selectedRack}
           slots={rackSlots}
           onClose={() => { setSlotDetailOpen(false); setSelectedRack(null); }}
+          scheme={scheme}
         />
       )}
-
-      <style>{`
-        @keyframes spin-reverse {
-          from { transform: rotate(360deg); }
-          to { transform: rotate(0deg); }
-        }
-        .animate-spin-reverse { animation: spin-reverse 2s linear infinite; }
-      `}</style>
     </div>
   );
 }

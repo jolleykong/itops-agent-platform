@@ -13,6 +13,8 @@ interface SceneProps {
   onHoverChange?: (rackId: string | null) => void;
   heatmapData?: Record<string, number>;
   viewMode: ViewMode;
+  /** 色彩方案（3D 场景按方案重建，key 由父组件控制） */
+  scheme?: import('./theme').DcScheme;
 }
 
 /** Three.js 对象的 userData 扩展属性 */
@@ -198,19 +200,19 @@ function createRack(rack: Rack3D): THREE.Group {
   return g;
 }
 
-function createEnv(scene: THREE.Scene) {
+function createEnv(scene: THREE.Scene, env3d: { bg: number; grid1: number; grid2: number; floor: number; ambient: number }) {
   const ft = floorTex();
   ft.wrapS = ft.wrapT = THREE.RepeatWrapping;
   ft.repeat.set(40, 40);
   const floor = new THREE.Mesh(
     new THREE.PlaneGeometry(80, 80),
-    new THREE.MeshStandardMaterial({ map: ft, color: 0x6a7a8a, metalness: 0.05, roughness: 0.8 })
+    new THREE.MeshStandardMaterial({ map: ft, color: env3d.floor, metalness: 0.05, roughness: 0.8 })
   );
   floor.rotation.x = -Math.PI / 2;
   floor.receiveShadow = true;
   scene.add(floor);
 
-  const grid = new THREE.GridHelper(80, 40, 0x4488aa, 0x335577);
+  const grid = new THREE.GridHelper(80, 40, env3d.grid1, env3d.grid2);
   grid.position.y = 0.02;
   grid.material.opacity = 0.5;
   grid.material.transparent = true;
@@ -233,7 +235,9 @@ const VIEW_TARGETS: Record<ViewMode, { pos: THREE.Vector3; target: THREE.Vector3
   zoneB:    { pos: new THREE.Vector3(0, TGT_Y + 15, 50),  target: new THREE.Vector3(0, TGT_Y, 5) },
 };
 
-export default function Scene({ racks, onRackClick, selectedRackId, hoveredRackId, onHoverChange, heatmapData, viewMode }: SceneProps) {
+export default function Scene({ racks, onRackClick, selectedRackId, hoveredRackId, onHoverChange, heatmapData, viewMode, scheme }: SceneProps) {
+  // 场景环境色：来自色彩方案（未传时用深海蓝默认）
+  const env3d = scheme?.scene3d ?? { bg: 0x1e2e3e, grid1: 0x4488aa, grid2: 0x335577, floor: 0x6a7a8a, ambient: 1.1 };
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
@@ -253,8 +257,8 @@ export default function Scene({ racks, onRackClick, selectedRackId, hoveredRackI
     const w = cv.clientWidth, h = cv.clientHeight;
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x1e2e3e);
-    scene.fog = new THREE.Fog(0x1e2e3e, 40, 120);
+    scene.background = new THREE.Color(env3d.bg);
+    scene.fog = new THREE.Fog(env3d.bg, 40, 120);
     sceneRef.current = scene;
 
     const camera = new THREE.PerspectiveCamera(45, w / h, 0.1, 200);
@@ -262,7 +266,7 @@ export default function Scene({ racks, onRackClick, selectedRackId, hoveredRackI
     cameraRef.current = camera;
 
     const renderer = new THREE.WebGLRenderer({ canvas: cv, antialias: true, alpha: false });
-    renderer.setClearColor(0x1e2e3e);
+    renderer.setClearColor(env3d.bg);
     renderer.setSize(w, h, false);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.shadowMap.enabled = true;
@@ -282,7 +286,7 @@ export default function Scene({ racks, onRackClick, selectedRackId, hoveredRackI
     controlsRef.current = controls;
 
     // 灯光
-    scene.add(new THREE.AmbientLight(0xbbccdd, 1.1));
+    scene.add(new THREE.AmbientLight(0xbbccdd, env3d.ambient));
     const sun = new THREE.DirectionalLight(0xffffff, 1.3);
     sun.position.set(30, 50, 20);
     sun.castShadow = true;
@@ -300,7 +304,7 @@ export default function Scene({ racks, onRackClick, selectedRackId, hoveredRackI
     scene.add(new THREE.PointLight(0x4488ff, 1.5, 40)).position.set(0, 10, 0);
     scene.add(new THREE.HemisphereLight(0x99aacc, 0x445566, 0.6));
 
-    createEnv(scene);
+    createEnv(scene, env3d);
 
     // 交互
     let dragging = false, ds = { x: 0, y: 0 };
