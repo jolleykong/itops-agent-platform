@@ -173,9 +173,9 @@ interface LocalServerRow {
   os: string | null;
 }
 
-/** 硬件名（svr-MGMT/iLo/idrac/bmc/imm-{IP}-{OS名}）→ OS 主机名后缀 */
+/** 硬件名（svr-MGMT/iLo/idrac/bmc/imm-{IP}-{OS名}）→ OS 主机名后缀（2026-11-26 起前缀大写 SVR-，/i 兼容两代） */
 function hardwareOsSuffix(serverName: string): string {
-  return serverName.replace(/^svr-(?:MGMT|iLo|idrac|bmc|imm)-[\d.]+-/, '');
+  return serverName.replace(/^svr-(?:MGMT|iLo|idrac|bmc|imm)-[\d.]+-/i, '');
 }
 
 /**
@@ -185,7 +185,7 @@ function hardwareOsSuffix(serverName: string): string {
  * 兼容裸主机名与旧世代「-数字尾巴」行（obdb02-197）。
  */
 function localOsChildren(serverName: string): CiChainNode[] {
-  if (!serverName.startsWith('svr-')) return [];
+  if (!/^svr-/i.test(serverName)) return [];
   const suffix = hardwareOsSuffix(serverName);
   if (!suffix) return [];
   const rows = db
