@@ -125,7 +125,7 @@ export interface ServerUpsertResult {
  * 因此这里不再做 IP 冲突预检——直接写入即可。
  *
  * iTop 字段映射：
- *   managementip_name → ip_address（管理 IP，优先）
+ *   managementip → ip_address（管理 IP，优先）
  *   svrbizip_name     → 备用（业务 IP，managementip 为空时用）
  *   osfamily_name     → os
  *   brand/model/serial → description 资产行（「品牌: x；型号: y；SN: z」），
@@ -135,7 +135,7 @@ export function upsertServer(
   existingId: string | undefined,
   fields: {
     name: string;
-    managementip_name?: string;
+    managementip?: string;
     svrbizip_name?: string;
     osfamily_name?: string;
     description?: string;
@@ -144,7 +144,7 @@ export function upsertServer(
     brand_name?: string;
   },
 ): ServerUpsertResult {
-  const ip = fields.managementip_name || fields.svrbizip_name || '';
+  const ip = fields.managementip || fields.svrbizip_name || '';
 
   // 资产行：iTop 有品牌/型号/SN（BMC FRU 补齐成果）则组合；否则沿用 iTop description
   const assetParts: string[] = [];
@@ -212,7 +212,7 @@ function mapNetworkDeviceType(iTopTypeName?: string, finalClass?: string): strin
  *   其他（switch / router / firewall 等）→ network_devices（要求唯一 IP）
  *
  * iTop 字段映射：
- *   managementip_name     → ip_address（管理 IP）
+ *   managementip     → ip_address（管理 IP）
  *   finalclass            → 设备类型判断（NetworkDevice / PDU / UPS ...）
  *   networkdevicetype_id_friendlyname → device_type 枚举映射（Switch/Firewall/Router...）
  *   brand_name / model_name → vendor / model（台账导入的设备这些字段常为空，空值不覆盖）
@@ -222,7 +222,7 @@ export function upsertDatacenterDevice(
   fields: {
     name: string;
     description?: string;
-    managementip_name?: string;
+    managementip?: string;
     finalclass?: string;
     networkdevicetype_id_friendlyname?: string;
     serialnumber?: string;
@@ -230,8 +230,8 @@ export function upsertDatacenterDevice(
     brand_name?: string;
   },
 ): DeviceUpsertResult {
-  // IP 兜底：台账导入的设备 name 即管理 IP（iTop 里 managementip 未关联 → managementip_name 为空）
-  const ip = fields.managementip_name || (/^\d{1,3}(\.\d{1,3}){3}$/.test(fields.name.trim()) ? fields.name.trim() : '');
+  // IP 兜底：台账导入的设备 name 即管理 IP（iTop 里 managementip 未关联 → managementip 为空）
+  const ip = fields.managementip || (/^\d{1,3}(\.\d{1,3}){3}$/.test(fields.name.trim()) ? fields.name.trim() : '');
   const finalClass = (fields.finalclass ?? '').toLowerCase();
   const isPDU = finalClass.includes('pdu') || finalClass.includes('ups');
   const deviceType = mapNetworkDeviceType(fields.networkdevicetype_id_friendlyname, fields.finalclass);

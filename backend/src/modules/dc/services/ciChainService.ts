@@ -62,11 +62,11 @@ function esc(s: string): string {
 
 /** 各类 self 查询的 output_fields（只列确认存在的字段，减少 REST 报错面） */
 const SELF_FIELDS: Record<string, string> = {
-  Server: 'name,status,brand_name,model_name,serialnumber,managementip_name,osfamily_name,rack_id_friendlyname',
-  Hypervisor: 'name,status,managementip_name,server_id_friendlyname',
-  VirtualMachine: 'name,status,osfamily_name,managementip_name,virtualhost_id_friendlyname',
+  Server: 'name,status,brand_name,model_name,serialnumber,managementip,osfamily_name,rack_id_friendlyname',
+  Hypervisor: 'name,status,managementip,server_id_friendlyname',
+  VirtualMachine: 'name,status,osfamily_name,managementip,virtualhost_id_friendlyname',
   DBServer: 'name,status,system_id_friendlyname',
-  NetworkDevice: 'name,status,managementip_name,brand_name,model_name,rack_id_friendlyname',
+  NetworkDevice: 'name,status,managementip,brand_name,model_name,rack_id_friendlyname',
   StorageSystem: 'name,status,brand_name,model_name,rack_id_friendlyname',
   PDU: 'name,status,rack_id_friendlyname',
   UPS: 'name,status,rack_id_friendlyname',
@@ -144,12 +144,12 @@ function isStaleDbServer(status: string | null | undefined): boolean {
 /** 下层（children）关系查询表 */
 const CHILDREN_QUERIES: Record<string, RelationQuery[]> = {
   Server: [
-    { className: 'Hypervisor', relation: '虚拟化宿主', oql: n => `SELECT Hypervisor WHERE server_id_friendlyname = '${esc(n)}'`, fields: 'name,status,managementip_name' },
-    { className: 'VirtualMachine', relation: '直挂虚拟机', oql: n => `SELECT VirtualMachine WHERE virtualhost_id_friendlyname = '${esc(n)}'`, fields: 'name,status,osfamily_name,managementip_name' },
+    { className: 'Hypervisor', relation: '虚拟化宿主', oql: n => `SELECT Hypervisor WHERE server_id_friendlyname = '${esc(n)}'`, fields: 'name,status,managementip' },
+    { className: 'VirtualMachine', relation: '直挂虚拟机', oql: n => `SELECT VirtualMachine WHERE virtualhost_id_friendlyname = '${esc(n)}'`, fields: 'name,status,osfamily_name,managementip' },
     { className: 'DBServer', relation: '数据库实例', oql: n => `SELECT DBServer WHERE system_id_friendlyname = '${esc(n)}'`, fields: 'name,status' },
   ],
   Hypervisor: [
-    { className: 'VirtualMachine', relation: '虚拟机', oql: n => `SELECT VirtualMachine WHERE virtualhost_id_friendlyname = '${esc(n)}'`, fields: 'name,status,osfamily_name,managementip_name' },
+    { className: 'VirtualMachine', relation: '虚拟机', oql: n => `SELECT VirtualMachine WHERE virtualhost_id_friendlyname = '${esc(n)}'`, fields: 'name,status,osfamily_name,managementip' },
   ],
   VirtualMachine: [
     { className: 'DBServer', relation: '数据库实例', oql: n => `SELECT DBServer WHERE system_id_friendlyname = '${esc(n)}'`, fields: 'name,status' },
@@ -301,7 +301,7 @@ export async function getCiChain(params: {
   }
 
   const f = self.fields;
-  const selfIp = fieldStr(f, 'managementip_name');
+  const selfIp = fieldStr(f, 'managementip');
   const selfExtraParts = [fieldStr(f, 'brand_name'), fieldStr(f, 'model_name'), fieldStr(f, 'osfamily_name')]
     .filter(Boolean)
     .join(' / ');
@@ -358,7 +358,7 @@ export async function getCiChain(params: {
         name: fieldStr(r.fields, 'name') ?? String(r.key),
         relation: q.relation,
         status: st,
-        ip: fieldStr(r.fields, 'managementip_name'),
+        ip: fieldStr(r.fields, 'managementip'),
         extra: fieldStr(r.fields, 'osfamily_name'),
       });
     }
@@ -367,6 +367,54 @@ export async function getCiChain(params: {
   // 硬件服务器追加本地 OS 层（Zabbix agent 主机，iTop 不独立建 CI）
   if (self.class === 'Server') {
     children.push(...localOsChildren(name));
+  }
+
+  // VM 双视图关联（v3.20）：同一台虚拟机在 iTop 有两个 CI ——
+  //   VM 层   = vCenter 发现对象，可见名 {vCenter名}-VM，通常 production
+  //   OS 层   = Zabbix agent 采集主机，名 VS-/VR- 前缀或历史遗留 IP 名，多为 obsolete
+  // 硬关联键 = managementip（用户确认：-VM 后缀与虚拟机 OS 的地址必然一致）。
+  // 实测：529 台 -VM 中 302 台有 IP，其中 301 台能与 OS 层按 IP 对上（99.7%）；
+  // 227 台无 IP 属数据缺口（vCenter 侧未采到 guest IP），非关联逻辑问题。
+  // 同一 IP 常有多个 OS 层对象（旧命名残渣 + IP 命名遗留），排序让最可能是正主的
+  // 排最前：名字精确对应（剥 -VM 后同名）> production > 字母序。
+  // 双向挂接：从 -VM 进入看「操作系统视图」，从 OS 层进入看「虚拟化对象」；
+  // 前端为点开式逐级下钻，不会自动递归，不存在死循环。
+  if (self.class === 'VirtualMachine' && selfIp) {
+    try {
+      const vmRows = await listByOQL(
+        'VirtualMachine',
+        `SELECT VirtualMachine WHERE managementip = '${esc(selfIp)}'`,
+        'name,status,osfamily_name,managementip',
+      );
+      const selfIsVmLayer = /-VM$/i.test(name);
+      const exactBase = name.replace(/-VM$/i, '');
+      const pick: CiChainNode[] = [];
+      for (const r of vmRows) {
+        const other = fieldStr(r.fields, 'name') ?? String(r.key);
+        if (other === name) continue;
+        // 同层不重复挂（同为 -VM 或同为非 -VM 的多台，各自由自身关联对方）
+        if (/-VM$/i.test(other) === selfIsVmLayer) continue;
+        pick.push({
+          class: 'VirtualMachine',
+          name: other,
+          relation: selfIsVmLayer ? '操作系统视图' : '虚拟化对象',
+          status: normalizeStatus(fieldStr(r.fields, 'status')),
+          ip: fieldStr(r.fields, 'managementip'),
+          extra: fieldStr(r.fields, 'osfamily_name'),
+        });
+      }
+      const rank = (n: CiChainNode): number => {
+        let s = 0;
+        if (n.name === exactBase || n.name === `${exactBase}-VM`) s += 100;
+        if ((n.status ?? '').toLowerCase() === 'production') s += 50;
+        if (/^\d{1,3}(\.\d{1,3}){3}$/.test(n.name)) s -= 20; // IP 命名多为遗留占位
+        return s;
+      };
+      pick.sort((a, b) => rank(b) - rank(a) || a.name.localeCompare(b.name));
+      children.push(...pick);
+    } catch (err) {
+      logger.warn(`ciChain vmOsView failed for ${name}: ${(err as Error).message}`);
+    }
   }
 
   return {

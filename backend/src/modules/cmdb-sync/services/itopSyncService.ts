@@ -43,7 +43,7 @@ export interface SyncResult {
 
 interface ITopServer {
   name: string;
-  managementip_name?: string;
+  managementip?: string;
   svrbizip_name?: string;
   osfamily_name?: string;
   /** iTop Rack 数字 id（Server extends DatacenterDevice，自带 rack_id 外键） */
@@ -69,7 +69,7 @@ interface ITopLocation {
 interface ITopDatacenterDevice {
   name: string;
   description?: string;
-  managementip_name?: string;
+  managementip?: string;
   finalclass?: string;
   /** iTop Rack 数字 id */
   rack_id?: string;
@@ -277,7 +277,7 @@ const serverStrategy: SyncStrategy<ITopServer> = {
   ciType: 'Server',
   oql: 'SELECT Server',
   outputFields:
-    'name, managementip_name, svrbizip_name, osfamily_name, organization_name, status, serialnumber, rack_id, description, model_name, brand_name',
+    'name, managementip, svrbizip_name, osfamily_name, organization_name, status, serialnumber, rack_id, description, model_name, brand_name',
   upsert: (fields, { existingId }) => {
     const res = upsertServer(existingId, fields);
     // 挂柜关系：rack_id 经 Rack idMap 解析后写 dc_rack_slots；
@@ -298,7 +298,7 @@ const datacenterDeviceStrategy: SyncStrategy<ITopDatacenterDevice> = {
   // （按名字占位挂柜产生双份槽位）。排除后仅剩真正的机房设备（NetworkDevice/PDU/UPS/StorageSystem...）
   oql: "SELECT DatacenterDevice WHERE finalclass != 'Server'",
   outputFields:
-    'name, description, managementip_name, finalclass, organization_name, serialnumber, rack_id, networkdevicetype_id_friendlyname, model_name, brand_name',
+    'name, description, managementip, finalclass, organization_name, serialnumber, rack_id, networkdevicetype_id_friendlyname, model_name, brand_name',
   upsert: (fields, { existingId }) => {
     const res = upsertDatacenterDevice(existingId, fields);
     // 挂柜关系：U 位优先从 description 台账标注「位置：Uxx」解析
