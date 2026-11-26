@@ -55,7 +55,7 @@ export interface ITopClientConfig {
 // 客户端
 // ============================================================
 
-const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_TIMEOUT_MS = 60_000;
 
 class ITopClient {
   private config: ITopClientConfig | null = null;

@@ -68,7 +68,7 @@ const initialConfig: ITopConfig = {
   authUser: 'admin',
   syncEnabled: false,
   syncIntervalMinutes: 30,
-  timeoutMs: 30000,
+  timeoutMs: 60000,
   sslVerify: false,
   tokenConfigured: false,
 };
@@ -373,11 +373,15 @@ export default function ITopSyncSettings() {
             <input
               type="number"
               min={1000}
-              max={300000}
+              max={600000}
+              step={1000}
               value={config.timeoutMs}
-              onChange={(e) => setConfig({ ...config, timeoutMs: parseInt(e.target.value) || 30000 })}
+              onChange={(e) => setConfig({ ...config, timeoutMs: parseInt(e.target.value) || 60000 })}
               className="w-full px-3 py-2 bg-surface border border-border rounded-lg text-sm text-text-primary focus:outline-none focus:ring-2 focus:ring-primary/40"
             />
+            <p className="text-xs text-text-tertiary mt-1">
+              默认 60000（60 秒），上限 600000（10 分钟）；全量同步或大 OQL 查询可适当加大
+            </p>
           </div>
         </div>
 

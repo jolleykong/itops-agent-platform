@@ -25,7 +25,7 @@
     "storageDevices": "Storage Devices",
     "virtualMachines": "Virtual Machines",
     "dcInfrastructure": "DC Management",
-    "dcRoom3D": "DC 3D Monitor",
+    "dcRoom3D": "DC Room View",
     "cmdbTopology": "CMDB Topology",
     "configTemplates": "Config Templates",
     "dockerCompose": "Docker Compose",

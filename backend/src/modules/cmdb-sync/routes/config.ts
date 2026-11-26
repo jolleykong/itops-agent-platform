@@ -22,7 +22,7 @@ const saveConfigSchema = z.object({
   authToken: z.string().max(512).optional(),
   syncEnabled: z.boolean().optional(),
   syncIntervalMinutes: z.number().int().min(1).max(1440).optional(),
-  timeoutMs: z.number().int().min(1000).max(300000).optional(),
+  timeoutMs: z.number().int().min(1000).max(600000).optional(),
   sslVerify: z.boolean().optional(),
 });
 

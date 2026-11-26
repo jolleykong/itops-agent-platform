@@ -62,7 +62,7 @@ export const itopConfigService = {
       authUser,
       syncEnabled: syncEnabledStr === 'true',
       syncIntervalMinutes: syncIntervalStr ? parseInt(syncIntervalStr, 10) : 30,
-      timeoutMs: timeoutStr ? parseInt(timeoutStr, 10) : 30000,
+      timeoutMs: timeoutStr ? parseInt(timeoutStr, 10) : 60000,
       // 默认 false:企业内网 iTop 常用自签名/内部 CA,默认不校验更易接入
       sslVerify: sslVerifyStr !== null && sslVerifyStr === 'true',
       tokenConfigured: !!token,
@@ -148,7 +148,7 @@ export const itopConfigService = {
 
     const start = Date.now();
     const timeoutStr = settingsRepository.getValue('ITOP_TIMEOUT_MS');
-    const timeoutMs = timeoutStr ? parseInt(timeoutStr, 10) : 30000;
+    const timeoutMs = timeoutStr ? parseInt(timeoutStr, 10) : 60000;
     const sslVerify = settingsRepository.getValue('ITOP_SSL_VERIFY') === 'true';
     const result = await itopClient.testWithConfig({
       apiUrl,

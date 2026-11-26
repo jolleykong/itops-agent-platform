@@ -25,7 +25,7 @@
     "storageDevices": "存储设备",
     "virtualMachines": "虚拟机管理",
     "dcInfrastructure": "数据中心管理",
-    "dcRoom3D": "机房3D监控",
+    "dcRoom3D": "机房查看",
     "cmdbTopology": "CMDB拓扑结构",
     "configTemplates": "配置模板",
     "dockerCompose": "Docker编排",

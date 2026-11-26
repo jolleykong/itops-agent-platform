@@ -200,10 +200,14 @@ export default function RackFrontView({ rack, slots, onClose, scheme }: Props) {
     }
   };
 
-  /** 层级链（根机柜 → 本列自身，含端点），供「复制层级」使用 */
+  /** 机柜内设备的 U 位标记，如 U10 或 U10-U11 */
+  const uPos = (s: SlotInfo) => `U${s.startU}${s.endU > s.startU ? `-U${s.endU}` : ''}`;
+
+  /** 层级链（根机柜 → 本列自身，含端点），供「复制层级」与层链展示使用。
+   *  机柜内设备（第 1 级）在后缀上标注所在 U 位：rack > 设备(U10-U11) > 下层 CI */
   const chainFor = (idx: number): string[] => {
     const chain = [rack.name];
-    if (selected) chain.push(selected.deviceName);
+    if (selected) chain.push(`${selected.deviceName}(${uPos(selected)})`);
     for (const lv of levels.slice(1, idx + 1)) {
       const n = lv.resp?.self?.name ?? lv.node?.name;
       if (n) chain.push(n);
