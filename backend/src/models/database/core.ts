@@ -6,6 +6,8 @@ import { logger } from '../../utils/logger';
 import { runMigrations } from '../migrations';
 import { initializeDefaultData } from './defaultData';
 import { startDatabaseMaintenance } from './maintenance';
+import { resolveDriverKind, type DbDriverKind } from './driverInfo';
+import { MysqlSyncDriver } from './mysql/syncDriver';
 
 export { setIOInstance, getIOInstance } from '../../shared/websocket/io';
 
@@ -13,21 +15,32 @@ let dbInstance: Database.Database | null = null;
 let isInitialized = false;
 
 /**
- * 数据库驱动选择（P1 双驱动切换入口，2026-11-19 容量基准：几千台节点）：
+ * 数据库驱动选择（2026-11-19 容量基准：几千台节点；2026-11-26 增加 MySQL 共用实例）
  * - sqlite（默认）：开发/测试/预览环境，同步 better-sqlite3，零部署成本
- * - pg：生产规模化目标驱动（PostgreSQL），通过 DB_URL 配置连接串
- *
- * 当前状态：repository 层 842 处 db.prepare 均为同步调用（better-sqlite3 API），
- * 切换 PG 需先完成 repository 层异步化收口（见 docs/pg-migration-design.md）。
- * 在此之前配置 pg 会在启动时明确报错，避免静默走错驱动。
+ * - mysql：生产/内网共用 MariaDB 实例。repository 层仍是同步调用形态，
+ *   由 mysql/syncDriver.ts 提供 better-sqlite3 同形的同步门面
+ *   （worker 线程跑 mysql2 + Atomics 同步等待，SQL 经 mysql/dialect.ts 翻译）。
+ *   **业务代码零改动**，切换只靠环境变量。
+ * - pg：目标驱动，尚未启用（pg 路径需先完成 repository 层异步化）。
  */
-function resolveDriver(): 'sqlite' | 'pg' {
-  const driver = (process.env.DB_DRIVER || 'sqlite').toLowerCase();
-  if (driver !== 'sqlite' && driver !== 'pg') {
-    logger.warn(`⚠️ 未知 DB_DRIVER="${driver}"，回退为 sqlite`);
-    return 'sqlite';
-  }
-  return driver as 'sqlite' | 'pg';
+function resolveDriver(): DbDriverKind {
+  const driver = resolveDriverKind();
+  if (driver === 'pg') return 'pg';
+  return driver;
+}
+
+function createMysqlInstance(): Database.Database {
+  const cfg = {
+    host: env.DB_HOST,
+    port: env.DB_PORT,
+    user: env.DB_USER,
+    password: env.DB_PASSWORD,
+    database: env.DB_NAME,
+    timeoutMs: env.DB_STATEMENT_TIMEOUT_MS,
+  };
+  logger.info(`🗄️ 使用 MySQL 驱动：${cfg.host}:${cfg.port}/${cfg.database}`);
+  // MysqlSyncDriver 提供了 better-sqlite3 的同步 API 子集，这里按 Database 交回调用方
+  return new MysqlSyncDriver(cfg) as unknown as Database.Database;
 }
 
 function createDatabaseInstance(dbPath: string): Database.Database {
@@ -123,17 +136,17 @@ export async function initializeDatabase(): Promise<void> {
     return;
   }
 
-  // P1 双驱动入口：PG 切换需先完成 repository 层异步化（docs/pg-migration-design.md）
+  // 双驱动入口
   const driver = resolveDriver();
   if (driver === 'pg') {
     throw new Error(
       '[DB_DRIVER=pg] PostgreSQL 驱动尚未启用：repository 层仍为 better-sqlite3 同步 API，' +
-      '需先完成异步化收口改造（见 docs/pg-migration-design.md）。当前请使用 DB_DRIVER=sqlite。'
+        '需先完成异步化收口改造（见 docs/pg-migration-design.md）。当前请使用 DB_DRIVER=sqlite 或 mysql。',
     );
   }
   logger.info(`🗄️ Database driver: ${driver}`);
 
-  dbInstance = createDatabaseInstance(env.DATABASE_PATH);
+  dbInstance = driver === 'mysql' ? createMysqlInstance() : createDatabaseInstance(env.DATABASE_PATH);
   isInitialized = true;
 
   // 运行数据库迁移（包含所有表和索引创建）

@@ -1,5 +1,6 @@
 /* eslint-disable no-console */
 import type { Migration } from './migrationFramework';
+import { isMysql } from '../database/driverInfo';
 
 /**
  * v012 — 数据库时区迁移至 UTC+8 (Asia/Shanghai)
@@ -17,6 +18,14 @@ const migration: Migration = {
   name: 'Timezone migration to UTC+8',
   description: 'Shift all existing timestamps from UTC to Asia/Shanghai (UTC+8)',
   async up(db) {
+    // MySQL 驱动下跳过：本迁移是 SQLite 专有实现（读 sqlite_master 的 DDL 文本、
+    // 靠重建表补 CHECK/FK、用 RAISE(ABORT) 触发器模拟多态外键），MySQL 侧无等价物。
+    // 新建库时这些约束由 v001 的建表语句直接带上，无需二次修补。
+    if (isMysql()) {
+      console.warn('[migration v012] MySQL 驱动下跳过（SQLite 专有实现：读 sqlite_master DDL 文本）');
+      return;
+    }
+
     // 获取所有带时间戳列的表
     const tables = db.prepare(`
       SELECT name FROM sqlite_master

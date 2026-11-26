@@ -155,12 +155,37 @@ class ITopClient {
       const rawIsString = typeof response.data === 'string';
       const rawBody = rawIsString ? (response.data as string) : JSON.stringify(response.data);
 
+      // 非 2xx：把状态码和响应体一起带出来 —— 排查时必须看到 iTop/PHP 的真实报错，
+      // 只给一句 "请求失败" 无法定位（同步日志里展示的就是这段文本）。
+      if (response.status >= 400) {
+        const plain = rawBody
+          .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+          .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+          .replace(/<[^>]+>/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+        return {
+          success: false,
+          error: `HTTP ${response.status} ${response.statusText || ''}`.trim() +
+            (plain ? `: ${plain.slice(0, 1500)}` : ''),
+        };
+      }
+
       // 检查是否是 HTML（登录失败/服务器错误）
       if (rawBody.trimStart().startsWith('<')) {
         // 提取 HTML 中的错误信息
         const errorMatch = rawBody.match(/<h1[^>]*>(.*?)<\/h1>/i);
         const errorMsg = errorMatch ? errorMatch[1].trim() : 'iTop 返回了 HTML 错误页面（可能是认证失败）';
-        return { success: false, error: errorMsg };
+        const plain = rawBody
+          .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+          .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+          .replace(/<[^>]+>/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+        return {
+          success: false,
+          error: `${errorMsg}${plain ? ` | 原始响应: ${plain.slice(0, 1200)}` : ''}`,
+        };
       }
 
       // 先按 envelope 形状解析（用于检测 iTop 业务错误码 code/message），再交给调用方按 T 使用
@@ -182,8 +207,14 @@ class ITopClient {
         return { success: false, error: `无法连接 iTop: ${axiosError.code}` };
       }
       const msg = error instanceof Error ? error.message : String(error);
+      const respData = (axiosError as AxiosError).response?.data;
+      const detail = respData
+        ? ` | 响应: ${
+            typeof respData === 'string' ? respData.slice(0, 1200) : JSON.stringify(respData).slice(0, 1200)
+          }`
+        : '';
       logger.error('iTop API request failed:', error as Error);
-      return { success: false, error: msg };
+      return { success: false, error: `${msg}${detail}` };
     }
   }
 

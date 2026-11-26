@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import type { Migration } from './migrationFramework';
+import { isMysql } from '../database/driverInfo';
 import { logger } from '../../utils/logger';
 
 /**
@@ -25,6 +26,14 @@ const v059DcPolymorphicFk: Migration = {
   description: 'Polymorphic FK + device_id validation triggers for dc_rack_slots (servers/network_devices/virtual_machines/dc_pdus)',
 
   up: async (db: any) => {
+    // MySQL 驱动下跳过：本迁移是 SQLite 专有实现（读 sqlite_master 的 DDL 文本、
+    // 靠重建表补 CHECK/FK、用 RAISE(ABORT) 触发器模拟多态外键），MySQL 侧无等价物。
+    // 新建库时这些约束由 v001 的建表语句直接带上，无需二次修补。
+    if (isMysql()) {
+      logger.warn('v59 多态外键触发器：MySQL 驱动下跳过（SQLite 专有实现）');
+      return;
+    }
+
     logger.info('🔄 Adding polymorphic FK triggers for dc_rack_slots...');
 
     // ── 1) 插入 U 位时验证 device 存在 ──

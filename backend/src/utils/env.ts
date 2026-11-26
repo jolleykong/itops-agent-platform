@@ -11,6 +11,15 @@ interface EnvConfig {
   NODE_ENV: string;
   PORT: number;
   DATABASE_PATH: string;
+  /** 数据库驱动：sqlite（默认）/ mysql / pg（未启用） */
+  DB_DRIVER: string;
+  DB_HOST: string;
+  DB_PORT: number;
+  DB_NAME: string;
+  DB_USER: string;
+  DB_PASSWORD: string;
+  /** 单条 SQL 超时（毫秒），全量同步时的批量写入上限 */
+  DB_STATEMENT_TIMEOUT_MS: number;
   LOG_LEVEL: string;
   JWT_SECRET: string;
   /** 凭据静态加密的独立密钥（可选，未设置时回退 JWT_SECRET 派生） */
@@ -29,6 +38,14 @@ interface EnvConfig {
   WEBHOOK_VERIFY_ENABLED: "true" | "false" | "warn";
   WEBHOOK_SECRET?: string;
   WEBHOOK_IP_WHITELIST?: string;
+  /** 全局限流：默认窗口内允许的请求数（每 IP + 方法 + 路径） */
+  RATE_LIMIT_MAX: number;
+  /** 全局限流：窗口长度（毫秒） */
+  RATE_LIMIT_WINDOW_MS: number;
+  /** 机房看板/拓扑等高频只读接口的限流上限（单窗口） */
+  RATE_LIMIT_READ_MAX: number;
+  /** 限流白名单（逗号分隔，支持 * 与 CIDR），命中的 IP 完全不限流 */
+  RATE_LIMIT_WHITELIST?: string;
   ALERT_WEBHOOK_URL?: string;
   ALERT_EMAIL_HOST?: string;
   ALERT_EMAIL_PORT?: number;
@@ -173,6 +190,14 @@ function validateEnv(): EnvConfig {
     NODE_ENV: getEnv("NODE_ENV", "development"),
     PORT: getEnvAsNumber("PORT", 3001),
     DATABASE_PATH: getEnv("DATABASE_PATH", "./data/app.db"),
+    // ── 数据库驱动（DB_DRIVER=mysql 时生效；sqlite 下这些值不参与连接） ──
+    DB_DRIVER: getEnv("DB_DRIVER", "sqlite"),
+    DB_HOST: getEnv("DB_HOST", "127.0.0.1"),
+    DB_PORT: getEnvAsNumber("DB_PORT", 3306),
+    DB_NAME: getEnv("DB_NAME", "aiops"),
+    DB_USER: getEnv("DB_USER", "aiops"),
+    DB_PASSWORD: process.env.DB_PASSWORD || "",
+    DB_STATEMENT_TIMEOUT_MS: getEnvAsNumber("DB_STATEMENT_TIMEOUT_MS", 60_000),
     LOG_LEVEL: getEnv("LOG_LEVEL", "info"),
     JWT_SECRET: jwtSecret,
   ENCRYPTION_SECRET: process.env.ENCRYPTION_SECRET || "",
@@ -193,6 +218,13 @@ function validateEnv(): EnvConfig {
       process.env.WEBHOOK_VERIFY_ENABLED,
     ),
     WEBHOOK_SECRET: process.env.WEBHOOK_SECRET,
+    // 注意：该项此前只在接口里声明、从未赋值 → 白名单永远是空数组、等于不生效。此处补齐。
+    WEBHOOK_IP_WHITELIST: process.env.WEBHOOK_IP_WHITELIST,
+    // 限流阈值（原 100/min 会被机房看板自身的逐级下钻请求打满 → 界面弹 429）
+    RATE_LIMIT_MAX: getEnvAsNumber("RATE_LIMIT_MAX", 600),
+    RATE_LIMIT_WINDOW_MS: getEnvAsNumber("RATE_LIMIT_WINDOW_MS", 60 * 1000),
+    RATE_LIMIT_READ_MAX: getEnvAsNumber("RATE_LIMIT_READ_MAX", 6000),
+    RATE_LIMIT_WHITELIST: process.env.RATE_LIMIT_WHITELIST,
     ALERT_WEBHOOK_URL: process.env.ALERT_WEBHOOK_URL,
     ALERT_EMAIL_HOST: process.env.ALERT_EMAIL_HOST,
     ALERT_EMAIL_PORT: getEnvAsNumber("ALERT_EMAIL_PORT", 587),

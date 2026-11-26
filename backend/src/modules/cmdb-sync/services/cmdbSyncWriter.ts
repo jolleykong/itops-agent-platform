@@ -177,21 +177,55 @@ export function upsertServer(
     : (fields.description ?? '');
 
   if (existingId) {
-    db.prepare(`
+    const updateWith = (setIp: boolean) =>
+      db.prepare(`
       UPDATE servers
-      SET name = ?, os = ?, hostname = COALESCE(NULLIF(?, ''), hostname), ip_address = ?,
+      SET name = ?, os = ?, hostname = COALESCE(NULLIF(?, ''), hostname)${setIp ? ', ip_address = ?' : ''},
           description = CASE WHEN ? != '' THEN ? ELSE description END,
           updated_at = datetime('now','localtime')
       WHERE id = ?
-    `).run(fields.name, fields.osfamily_name ?? '', ip, ip || null, desc, desc, existingId);
-    return { id: existingId, action: 'update' };
+    `).run(...(setIp
+        ? [fields.name, fields.osfamily_name ?? '', ip, ip || null, desc, desc, existingId]
+        : [fields.name, fields.osfamily_name ?? '', ip, desc, desc, existingId]));
+
+    try {
+      updateWith(true);
+      return { id: existingId, action: 'update' };
+    } catch (e) {
+      const msg = String((e as Error)?.message ?? e);
+      // 该 IP 已被别的服务器行占用（RAC SCAN VIP 多节点共用）→ 不覆盖 IP，其余字段照常更新
+      if (!/UNIQUE|Duplicate entry/i.test(msg)) throw e;
+      updateWith(false);
+      return {
+        id: existingId,
+        action: 'update',
+        message: `管理 IP ${ip} 已被其他服务器占用，本次未更新 IP`,
+      };
+    }
   }
 
   const newId = crypto.randomUUID();
-  db.prepare(`
+  const insertServer = (ipValue: string | null) =>
+    db.prepare(`
     INSERT INTO servers (id, name, hostname, port, username, password, use_ssh_key, os, os_type, ip_address, description, enabled, tags, created_at, updated_at)
     VALUES (?, ?, ?, 22, '', NULL, 0, ?, 'linux', ?, ?, 1, '[]', datetime('now','localtime'), datetime('now','localtime'))
-  `).run(newId, fields.name, ip || fields.name, fields.osfamily_name ?? '', ip || null, desc);
+  `).run(newId, fields.name, ip || fields.name, fields.osfamily_name ?? '', ipValue, desc);
+
+  try {
+    insertServer(ip || null);
+  } catch (e) {
+    const msg = String((e as Error)?.message ?? e);
+    // 同一个管理 IP 被多个 CI 共用（典型：RAC 的 SCAN VIP 被 5 个节点共享），
+    // 而 servers.ip_address 上有唯一索引 → 退化成「不带 IP 写入」，
+    // 避免整台服务器因为 IP 冲突而丢失（IP 可在平台手工补）。
+    if (!/UNIQUE|Duplicate entry/i.test(msg)) throw e;
+    insertServer(null);
+    return {
+      id: newId,
+      action: 'create',
+      message: `管理 IP ${ip} 已被其他服务器占用（唯一索引），已按无 IP 写入；未同步 SSH 密码/密钥`,
+    };
+  }
 
   return {
     id: newId,

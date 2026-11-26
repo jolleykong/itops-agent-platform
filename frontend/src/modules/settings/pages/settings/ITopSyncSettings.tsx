@@ -119,10 +119,11 @@ export default function ITopSyncSettings() {
   });
 
   // --- 加载日志 ---
+  // 200 条：同步一轮就有上千条明细，30 条会把错误挤掉；完整错误需要上下文才看得懂
   const { data: syncLogs } = useQuery<SyncLog[]>({
     queryKey: ['itopSyncLogs'],
     queryFn: async () => {
-      const { data } = await api.get('/cmdb-sync/logs', { params: { limit: 30 } });
+      const { data } = await api.get('/cmdb-sync/logs', { params: { limit: 200 } });
       return data as SyncLog[];
     },
     refetchInterval: 15000,
@@ -480,7 +481,8 @@ export default function ITopSyncSettings() {
             (syncStatus?.states ?? []).map((state) => {
               const Icon = CI_TYPE_ICONS[state.ci_type] ?? HardDrive;
               return (
-                <div key={state.ci_type} className="flex items-center gap-4 px-5 py-3">
+                <div key={state.ci_type} className="border-b border-border last:border-b-0">
+                  <div className="flex items-center gap-4 px-5 py-3">
                   <div
                     className={clsx(
                       'w-8 h-8 rounded-lg flex items-center justify-center',
@@ -525,6 +527,15 @@ export default function ITopSyncSettings() {
                   >
                     {state.last_status}
                   </div>
+                  </div>
+                  {/* 上次错误：完整展示（按原因归并以 ×N 计数），不再只给一句「N errors」 */}
+                  {state.last_error && (
+                    <div className="px-5 pb-3 -mt-1">
+                      <pre className="whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed text-status-failed bg-status-failed/5 border border-status-failed/20 rounded p-2 max-h-40 overflow-auto">
+                        {state.last_error}
+                      </pre>
+                    </div>
+                  )}
                 </div>
               );
             })

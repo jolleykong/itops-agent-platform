@@ -8,15 +8,22 @@
 
 import { createMigrationManager } from './migrations/index';
 import { logger } from '../utils/logger';
+import { isMysql } from './database/driverInfo';
 
 export { createMigrationManager } from './migrations/index';
 
 /**
  * 运行所有待处理的迁移
  * 用于数据库初始化时自动执行
+ *
+ * MySQL 驱动下整段迁移动期间关闭外键检查：
+ * SQLite 侧有大量「rename → create new → copy → drop old」的重建表模式，
+ * 父表被引用时 DROP 会被 InnoDB 拒绝。迁移结束（无论成败）立即恢复检查。
  */
 export async function runMigrations(db: any): Promise<void> {
+  const mysql = isMysql();
   try {
+    if (mysql) db.exec('SET FOREIGN_KEY_CHECKS=0');
     const manager = createMigrationManager(db);
     const status = manager.getStatus();
     
@@ -38,6 +45,14 @@ export async function runMigrations(db: any): Promise<void> {
   } catch (error) {
     logger.error('❌ Error during database migration', error as Error);
     throw error;
+  } finally {
+    if (mysql) {
+      try {
+        db.exec('SET FOREIGN_KEY_CHECKS=1');
+      } catch {
+        /* 忽略：连接异常时无需再恢复 */
+      }
+    }
   }
 }
 

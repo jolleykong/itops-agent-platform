@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import type { Migration } from './migrationFramework';
+import { isMysql } from '../database/driverInfo';
 import { logger } from '../../utils/logger';
 
 /**
@@ -24,6 +25,14 @@ const v063FixDcFkDangling: Migration = {
   description: 'Rebuild dc_rack_slots / dc_power_feeds whose FK points to dropped _dc_racks_backup',
 
   up: async (db: any) => {
+    // MySQL 驱动下跳过：本迁移是 SQLite 专有实现（读 sqlite_master 的 DDL 文本、
+    // 靠重建表补 CHECK/FK、用 RAISE(ABORT) 触发器模拟多态外键），MySQL 侧无等价物。
+    // 新建库时这些约束由 v001 的建表语句直接带上，无需二次修补。
+    if (isMysql()) {
+      logger.warn('v63 悬空外键重建表：MySQL 驱动下跳过（SQLite 专有实现）');
+      return;
+    }
+
     logger.info('🔄 Fixing dangling FK references to _dc_racks_backup...');
 
     const getDdl = (table: string): string =>

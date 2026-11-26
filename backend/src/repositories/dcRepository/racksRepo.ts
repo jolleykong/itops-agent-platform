@@ -17,9 +17,7 @@ export const racksRepo = {
     let query = `
       SELECT r.*, rm.name as room_name, rm.label as room_label,
         (SELECT COUNT(*) FROM dc_rack_slots WHERE rack_id = r.id) as device_count,
-        (SELECT IFNULL(SUM(used_u), 0) FROM (
-          SELECT (end_u - start_u + 1) as used_u FROM dc_rack_slots WHERE rack_id = r.id
-        )) as used_u
+        (SELECT IFNULL(SUM(end_u - start_u + 1), 0) FROM dc_rack_slots WHERE rack_id = r.id) as used_u
       FROM dc_racks r
       LEFT JOIN dc_rooms rm ON r.room_id = rm.id
       WHERE 1=1

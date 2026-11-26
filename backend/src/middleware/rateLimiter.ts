@@ -20,17 +20,46 @@ interface RateLimitConfig {
   };
 }
 
+/**
+ * 路由限流配置（窗口 / 上限）
+ *
+ * 阈值来源：环境变量优先，未配置时用下面的默认值。
+ *   RATE_LIMIT_WINDOW_MS  默认 60000
+ *   RATE_LIMIT_MAX        默认 600（全局限流，按 IP+方法+路径 计数）
+ *   RATE_LIMIT_READ_MAX   默认 6000（机房看板 / CMDB 看板 / 监控等高频只读接口）
+ *   RATE_LIMIT_WHITELIST  内网运维出口 IP，命中则完全不限流（逗号分隔，支持 CIDR 与 *）
+ *
+ * 历史坑：原来全局只有 100/min，机房看板的机柜下钻会连续请求
+ * `/api/v1/dc/ci-chain`（每点一个节点就一次），页面自己就能把配额打满，
+ * 前端随即弹「请求过于频繁」。这类只读下钻接口必须单独放宽。
+ */
+const READ_WINDOW_MS = env.RATE_LIMIT_WINDOW_MS;
+const READ_MAX = env.RATE_LIMIT_READ_MAX;
+
 const rateLimitConfig: RateLimitConfig = {
+  // 登录是最需要收紧的（防爆破），保持 5 次/15 分钟
   '/api/v1/auth/login': { windowMs: 15 * 60 * 1000, max: 5 },
   '/api/v1/auth': { windowMs: 60 * 1000, max: 20 },
   '/api/v1/copilot': { windowMs: 60 * 1000, max: 30 },
   '/api/v1/settings/api-keys': { windowMs: 60 * 1000, max: 10 },
   '/api/v1/webhooks': { windowMs: 1000, max: 10 },
+  // 高频只读：机房看板（机柜/U位/链路）、CMDB 看板、监控与拓扑
+  '/api/v1/dc': { windowMs: READ_WINDOW_MS, max: READ_MAX },
+  '/api/v1/cmdb-sync': { windowMs: READ_WINDOW_MS, max: READ_MAX },
+  '/api/v1/monitor': { windowMs: READ_WINDOW_MS, max: READ_MAX },
+  '/api/v1/topology': { windowMs: READ_WINDOW_MS, max: READ_MAX },
 };
 
-const ipWhitelist: readonly string[] = env.WEBHOOK_IP_WHITELIST
-  ? env.WEBHOOK_IP_WHITELIST.split(',').map(ip => ip.trim())
-  : [];
+const ipWhitelist: readonly string[] = [
+  ...(env.WEBHOOK_IP_WHITELIST ?? '')
+    .split(',')
+    .map((ip) => ip.trim())
+    .filter(Boolean),
+  ...(env.RATE_LIMIT_WHITELIST ?? '')
+    .split(',')
+    .map((ip) => ip.trim())
+    .filter(Boolean),
+];
 
 function isIpWhitelisted(ip: string | undefined): boolean {
   if (ipWhitelist.length === 0) return false;
@@ -64,7 +93,7 @@ function ipToNumber(ip: string): number {
   return ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0;
 }
 
-const DEFAULT_CONFIG = { windowMs: 60 * 1000, max: 100 };
+const DEFAULT_CONFIG = { windowMs: env.RATE_LIMIT_WINDOW_MS, max: env.RATE_LIMIT_MAX };
 
 function getClientKey(req: Request): string {
   const ip = req.ip || req.socket.remoteAddress || 'unknown';
@@ -186,3 +215,11 @@ setInterval(() => {
     logger.debug(`Rate limiter cleanup: removed ${count} expired entries (remaining: ${rateLimitStore.size})`);
   }
 }, CLEANUP_INTERVAL_MS);
+
+logger.info(
+  `🚦 限流生效：默认 ${DEFAULT_CONFIG.max} 次/${Math.round(
+    DEFAULT_CONFIG.windowMs / 1000,
+  )}s，只读接口 ${READ_MAX} 次/${Math.round(READ_WINDOW_MS / 1000)}s，白名单 ${
+    ipWhitelist.length ? ipWhitelist.join(',') : '(空)'
+  }`,
+);

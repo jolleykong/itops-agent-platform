@@ -122,8 +122,8 @@ export const changeRepository = {
   /** 按服务器查询最近变更 */
   getRecentByServer(serverId: string, hours: number): ChangeRecord[] {
     return db.prepare(`
-      SELECT * FROM change_records WHERE server_id = ? AND created_at >= datetime('now', ?) ORDER BY created_at DESC
-    `).all(serverId, `-${hours} hours`) as ChangeRecord[];
+      SELECT * FROM change_records WHERE server_id = ? AND created_at >= datetime('now', ? || ' hours') ORDER BY created_at DESC
+    `).all(serverId, `${-hours}`) as ChangeRecord[];
   },
 
   /** 删除变更记录 */

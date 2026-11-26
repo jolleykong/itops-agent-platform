@@ -187,6 +187,24 @@ async function syncCIs<TFields>(
 
   const idMap = cmdbSyncStateRepo.getIdMap(ciType);
 
+  // 错误归集：只写「N errors」在界面上等于没写，必须带出真实原因与样例对象。
+  // key = 归一化后的错误文本，value = { 次数, 首个 itopId 样例 }
+  const errorGroups = new Map<string, { count: number; sampleId?: string }>();
+  const recordError = (itopId: string | undefined, msg: string) => {
+    const key = msg.replace(/\s+/g, ' ').trim().slice(0, 600);
+    const g = errorGroups.get(key);
+    if (g) g.count++;
+    else errorGroups.set(key, { count: 1, sampleId: itopId });
+  };
+  const formatErrors = (): string | null => {
+    if (errorGroups.size === 0) return null;
+    const lines = [...errorGroups.entries()]
+      .sort((a, b) => b[1].count - a[1].count)
+      .slice(0, 5)
+      .map(([msg, g]) => `×${g.count} ${msg}${g.sampleId ? `（示例 iTop id=${g.sampleId}）` : ''}`);
+    return [`${stats.errors} 条失败`, ...lines].join('\n');
+  };
+
   // 事务：保证 upsert 数据 + idMap 落库的原子性
   const tx = db.transaction(() => {
     for (const obj of Object.values(result.data!.objects)) {
@@ -217,10 +235,12 @@ async function syncCIs<TFields>(
         });
       } catch (err) {
         stats.errors++;
+        const msg = err instanceof Error ? err.message : String(err);
+        recordError(itopId, msg);
         cmdbSyncLogRepo.insert({
           sync_batch_id: batchId, direction: 'pull', ci_type: ciType, action: 'error',
           itop_id: itopId, success: false,
-          message: err instanceof Error ? err.message : String(err),
+          message: `iTop id=${itopId}: ${msg}`,
         });
       }
     }
@@ -230,7 +250,7 @@ async function syncCIs<TFields>(
       last_sync_duration_ms: Date.now() - start,
       last_count: stats.pulled,
       last_status: stats.errors > 0 ? 'partial' : 'success',
-      last_error: stats.errors > 0 ? `${stats.errors} errors` : null,
+      last_error: formatErrors(),
       itop_id_map: JSON.stringify(idMap),
     });
   });
