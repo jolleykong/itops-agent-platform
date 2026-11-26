@@ -13,6 +13,10 @@
  * 接口形态：每层一个请求（前端按节点懒展开，多级别层次递归）：
  *   GET /dc/ci-chain?class=&name=                ← 已知 iTop class，查邻接关系
  *   GET /dc/ci-chain?deviceId=&deviceType=&deviceName= ← 槽位设备首查（解析 class+name）
+ *
+ * 虚拟类（非 iTop 类，仅本服务内部使用）：
+ *   OsHost — Zabbix OS 层主机（物理机场景，来源平台本地 servers 表）
+ *   VmOs   — 虚拟机的操作系统层 CI（iTop 里仍存成 VirtualMachine，见 vmCounterparts 注释）
  */
 import db from '../../../models/database';
 import { logger } from '../../../utils/logger';
@@ -74,6 +78,12 @@ const SELF_FIELDS: Record<string, string> = {
 
 /** 兜底最小字段集（output_fields 含类不存在的字段时降级重试） */
 const MIN_FIELDS = 'name,status';
+
+/** VirtualMachine 关系判定所需字段（-VM ↔ OS 层配对要用 IP 与宿主） */
+const VM_FIELDS = 'name,status,osfamily_name,managementip,virtualhost_id_friendlyname';
+
+/** 纯 IPv4 字面量名称：Zabbix 早期按 IP 建 CI 的遗留命名 */
+const PURE_IP_NAME = /^\d{1,3}(\.\d{1,3}){3}$/;
 
 interface ITopEntry {
   key: string | number;
@@ -272,6 +282,10 @@ export async function getCiChain(params: {
   if (className === 'OsHost') {
     return osHostChain(name);
   }
+  // VmOs：虚拟机的操作系统层 CI（iTop 里存成 VirtualMachine，语义是 OS）
+  if (className === 'VmOs') {
+    return vmOsChain(name);
+  }
   if (className === 'Rack' || className === 'Room') {
     return rackRoomChain(className, name);
   }
@@ -369,51 +383,44 @@ export async function getCiChain(params: {
     children.push(...localOsChildren(name));
   }
 
-  // VM 双视图关联（v3.20）：同一台虚拟机在 iTop 有两个 CI ——
-  //   VM 层   = vCenter 发现对象，可见名 {vCenter名}-VM，通常 production
-  //   OS 层   = Zabbix agent 采集主机，名 VS-/VR- 前缀或历史遗留 IP 名，多为 obsolete
-  // 硬关联键 = managementip（用户确认：-VM 后缀与虚拟机 OS 的地址必然一致）。
-  // 实测：529 台 -VM 中 302 台有 IP，其中 301 台能与 OS 层按 IP 对上（99.7%）；
-  // 227 台无 IP 属数据缺口（vCenter 侧未采到 guest IP），非关联逻辑问题。
-  // 同一 IP 常有多个 OS 层对象（旧命名残渣 + IP 命名遗留），排序让最可能是正主的
-  // 排最前：名字精确对应（剥 -VM 后同名）> production > 字母序。
-  // 双向挂接：从 -VM 进入看「操作系统视图」，从 OS 层进入看「虚拟化对象」；
-  // 前端为点开式逐级下钻，不会自动递归，不存在死循环。
-  if (self.class === 'VirtualMachine' && selfIp) {
+  // 虚拟机的「另一层」关联（v3.21）：
+  // iTop 里同一台虚拟机常有两个 CI ——
+  //   虚拟化层 = vCenter 发现对象，可见名 {vCenter名}-VM，通常 production
+  //   操作系统层 = Zabbix agent 采集主机，名 VS-/VR- 前缀或历史遗留的纯 IP 名
+  // 关联键两条并行：① 名称（-VM 后缀互为对端，最高优先）② managementip。
+  // 名称必须并行：实测有 -VM 的 managementip 为空（vCenter 未采到 guest IP，
+  // 如 VS-finedb-VM），纯 IP 匹配会整条断开。
+  // 展示语义：从 -VM 下钻得到的是「操作系统」（class=VmOs），不是又一层虚拟机；
+  // 从 OS 层回看才是「虚拟化对象」（class=VirtualMachine）。
+  if (self.class === 'VirtualMachine') {
+    const selfIsVmLayer = /-VM$/i.test(name);
     try {
-      const vmRows = await listByOQL(
-        'VirtualMachine',
-        `SELECT VirtualMachine WHERE managementip = '${esc(selfIp)}'`,
-        'name,status,osfamily_name,managementip',
-      );
-      const selfIsVmLayer = /-VM$/i.test(name);
-      const exactBase = name.replace(/-VM$/i, '');
-      const pick: CiChainNode[] = [];
-      for (const r of vmRows) {
+      const counterparts = await vmCounterparts(name, selfIp);
+      for (const r of counterparts) {
         const other = fieldStr(r.fields, 'name') ?? String(r.key);
-        if (other === name) continue;
-        // 同层不重复挂（同为 -VM 或同为非 -VM 的多台，各自由自身关联对方）
-        if (/-VM$/i.test(other) === selfIsVmLayer) continue;
-        pick.push({
-          class: 'VirtualMachine',
+        children.push({
+          class: selfIsVmLayer ? 'VmOs' : 'VirtualMachine',
           name: other,
-          relation: selfIsVmLayer ? '操作系统视图' : '虚拟化对象',
+          relation: selfIsVmLayer ? '操作系统' : '虚拟化对象',
           status: normalizeStatus(fieldStr(r.fields, 'status')),
           ip: fieldStr(r.fields, 'managementip'),
           extra: fieldStr(r.fields, 'osfamily_name'),
         });
       }
-      const rank = (n: CiChainNode): number => {
-        let s = 0;
-        if (n.name === exactBase || n.name === `${exactBase}-VM`) s += 100;
-        if ((n.status ?? '').toLowerCase() === 'production') s += 50;
-        if (/^\d{1,3}(\.\d{1,3}){3}$/.test(n.name)) s -= 20; // IP 命名多为遗留占位
-        return s;
-      };
-      pick.sort((a, b) => rank(b) - rank(a) || a.name.localeCompare(b.name));
-      children.push(...pick);
     } catch (err) {
-      logger.warn(`ciChain vmOsView failed for ${name}: ${(err as Error).message}`);
+      logger.warn(`ciChain vmCounterparts failed for ${name}: ${(err as Error).message}`);
+    }
+    // 本身已是 OS 层（非 -VM）：数据库实例直接挂在这一层（含同 IP 别名归并）
+    if (!selfIsVmLayer) {
+      try {
+        const seen = new Set(children.map(c => `${c.class}:${c.name}`));
+        for (const c of await vmOsDbChildren(name, selfIp)) {
+          const k = `${c.class}:${c.name}`;
+          if (!seen.has(k)) { seen.add(k); children.push(c); }
+        }
+      } catch (err) {
+        logger.warn(`ciChain vmOsDbChildren failed for ${name}: ${(err as Error).message}`);
+      }
     }
   }
 
@@ -519,6 +526,160 @@ async function dbServerOsParents(dbServerName: string): Promise<CiChainNode[]> {
 
 function normalizeStatusSafe(s?: string): string | undefined {
   return s?.trim() || undefined;
+}
+
+// ============================================================
+// 虚拟机 ↔ 操作系统层（VmOs）
+// ============================================================
+
+/**
+ * 找出某个虚拟机 CI 的「另一层」对象（-VM ↔ OS 层互查）。
+ *
+ * 匹配顺序：名称优先（剥/加 `-VM` 后缀精确命中），再叠加 managementip 同址对象。
+ * 名称必须优先，因为部分 -VM 的 managementip 为空（如 VS-finedb-VM），只按 IP 会整条断链。
+ *
+ * 纯 IP 命名的对象是 Zabbix 早期按 IP 建 CI 的遗留物 —— 同一台机常有
+ * `VR-SSAPP150` 与 `10.240.21.131` 两份，后者属于残渣。只要存在具名对端就剔除纯 IP 项。
+ */
+async function vmCounterparts(vmName: string, vmIp?: string): Promise<ITopEntry[]> {
+  const selfIsVmLayer = /-VM$/i.test(vmName);
+  const base = vmName.replace(/-VM$/i, '');
+  const wantName = selfIsVmLayer ? base : `${vmName}-VM`;
+  const byName = new Map<string, ITopEntry>();
+
+  const add = (rows: ITopEntry[]) => {
+    for (const r of rows) {
+      const n = fieldStr(r.fields, 'name');
+      if (!n || n === vmName) continue;
+      // 同层不挂（同为 -VM 或同为非 -VM 的多台，各自由自身关联对方）
+      if (/-VM$/i.test(n) === selfIsVmLayer) continue;
+      if (!byName.has(n)) byName.set(n, r);
+    }
+  };
+
+  add(await listByOQL('VirtualMachine', `SELECT VirtualMachine WHERE name = '${esc(wantName)}'`, VM_FIELDS));
+  if (vmIp) {
+    add(await listByOQL('VirtualMachine', `SELECT VirtualMachine WHERE managementip = '${esc(vmIp)}'`, VM_FIELDS));
+  }
+
+  const all = [...byName.values()];
+  const named = all.filter(r => !PURE_IP_NAME.test(fieldStr(r.fields, 'name') ?? ''));
+  // 具名对端存在时只留具名的；一条都没有（历史库普遍按 IP 命名）才退回纯 IP 项
+  return named.length > 0 ? named : all;
+}
+
+/**
+ * VmOs 自身 + 邻接：宿主在上、数据库实例在下。
+ * self 仍来自 iTop 的 VirtualMachine CI，但对外以 VmOs 呈现（前端标签「操作系统」）。
+ */
+async function vmOsChain(osName: string): Promise<CiChain> {
+  if (!itopClient.isConfigured()) {
+    return { self: null, parents: [], children: [], source: 'local', degraded: 'iTop 未配置或不可达' };
+  }
+  const self = await getSelf('VirtualMachine', osName);
+  if (!self) {
+    return {
+      self: null,
+      parents: [],
+      children: [],
+      source: 'none',
+      degraded: `iTop 中未找到操作系统 CI「${osName}」`,
+    };
+  }
+
+  const f = self.fields;
+  const ip = fieldStr(f, 'managementip') || localServerIp(osName);
+
+  // 父：虚拟化宿主（占位符 ZBX-VM-Unassigned-Host 表示未关联，不展示）
+  const parents: CiChainNode[] = [];
+  const hv = fieldStr(f, 'virtualhost_id_friendlyname');
+  if (hv && hv !== 'ZBX-VM-Unassigned-Host') {
+    parents.push({ class: 'Hypervisor', name: hv, relation: '虚拟化宿主' });
+  }
+
+  // 子：该操作系统上运行的数据库实例（iTop DBServer）
+  let children: CiChainNode[] = [];
+  try {
+    children = await vmOsDbChildren(osName, ip);
+  } catch (err) {
+    logger.warn(`ciChain vmOsDbChildren failed for ${osName}: ${(err as Error).message}`);
+  }
+
+  return {
+    self: {
+      class: 'VmOs',
+      name: fieldStr(f, 'name') ?? osName,
+      status: normalizeStatus(fieldStr(f, 'status')),
+      ip,
+      extra: fieldStr(f, 'osfamily_name') || undefined,
+    },
+    parents,
+    children,
+    source: 'itop',
+    degraded: children.length === 0 ? '该操作系统未关联数据库实例 CI' : undefined,
+  };
+}
+
+/** 本地 servers 表补 IP（iTop 侧 managementip 偶有空值） */
+function localServerIp(name: string): string | undefined {
+  const row = db.prepare('SELECT ip_address FROM servers WHERE name = ? AND ip_address IS NOT NULL').get(name) as
+    | { ip_address: string | null }
+    | undefined;
+  return row?.ip_address ?? undefined;
+}
+
+/**
+ * 操作系统层 CI 下的数据库实例。
+ *
+ * 两个来源合并：
+ *   1. iTop DBServer.system_id_friendlyname 命中「同名或同 IP 的 OS 层 CI」——
+ *      同 IP 别名必须一起查：DB-ORA-Finedb-ODBC 挂的是别名 `finedb`，
+ *      而 -VM 对应的具名 OS 层是 `VS-finedb`，只按自身名查会漏。
+ *   2. Zabbix gv$instance 派生（Oracle RAC 实例跨节点）。
+ */
+async function vmOsDbChildren(osName: string, ip?: string): Promise<CiChainNode[]> {
+  const names = new Set<string>([osName]);
+  if (ip) {
+    const same = await listByOQL(
+      'VirtualMachine',
+      `SELECT VirtualMachine WHERE managementip = '${esc(ip)}'`,
+      'name,managementip',
+    );
+    for (const r of same) {
+      const n = fieldStr(r.fields, 'name');
+      // 别名只取 OS 层（非 -VM），-VM 是虚拟化层对象，不会承载 DBServer
+      if (n && !/-VM$/i.test(n)) names.add(n);
+    }
+  }
+
+  const conds = [...names].map(n => `system_id_friendlyname = '${esc(n)}'`);
+  const rows = await listByOQL('DBServer', `SELECT DBServer WHERE ${conds.join(' OR ')}`, 'name,status');
+
+  const out: CiChainNode[] = [];
+  const seen = new Set<string>();
+  for (const r of rows) {
+    const n = fieldStr(r.fields, 'name') ?? String(r.key);
+    if (seen.has(n) || isStaleDbServer(fieldStr(r.fields, 'status'))) continue;
+    seen.add(n);
+    out.push({
+      class: 'DBServer',
+      name: n,
+      relation: '数据库实例',
+      status: normalizeStatus(fieldStr(r.fields, 'status')),
+    });
+  }
+
+  try {
+    for (const c of await osDbInstanceChildren(osName)) {
+      if (seen.has(c.name)) continue;
+      seen.add(c.name);
+      out.push(c);
+    }
+  } catch (err) {
+    logger.warn(`ciChain osDbInstanceChildren failed for ${osName}: ${(err as Error).message}`);
+  }
+
+  return out;
 }
 
 

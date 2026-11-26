@@ -1,5 +1,5 @@
 /**
- * CMDB 拓扑结构（占位页，2026-11-24）
+ * CMDB 看板（占位页，2026-11-24 建立；2026-11-26 更名）
  *
  * 规划目标：层级化展示 CI 关系（机房 → 机柜 → 硬件 → OS/VM → 应用 等
  * 或按 iTop 关系图组织）。具体展示方式待规划，当前为占位视图。
@@ -13,7 +13,7 @@ export default function CmdbTopology() {
 
   return (
     <div className="p-6 max-w-3xl mx-auto">
-      <h1 className="text-2xl font-bold text-text-primary mb-2">CMDB 拓扑结构</h1>
+      <h1 className="text-2xl font-bold text-text-primary mb-2">CMDB看板</h1>
       <p className="text-text-secondary mb-6">层级化展示 CI 关系（规划中）</p>
 
       <div className="rounded-xl border border-dashed border-cyan-500/30 bg-cyan-500/5 p-8 text-center mb-6">

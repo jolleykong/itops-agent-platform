@@ -96,6 +96,22 @@ export function upsertRack(
     return { id: existingId, action: 'update' };
   }
 
+  // 幂等兜底：idMap 是同步状态的一部分，一旦丢失/重置（换库、清 state、手工删行），
+  // 仅靠 existingId 会在同一机房内重复建柜 —— 现网曾出现 19 组同名机柜（一个空柜一个实柜）。
+  // 因此在 create 前按 (room_id, name) 再查一次，命中即转为更新。
+  if (!existingId) {
+    const dup = db
+      .prepare('SELECT id FROM dc_racks WHERE room_id = ? AND name = ? ORDER BY id LIMIT 1')
+      .get(roomId, fields.name) as { id: string } | undefined;
+    if (dup) {
+      const totalUdup = Number(fields.nb_u) > 0 ? Number(fields.nb_u) : 42;
+      db.prepare(`UPDATE dc_racks SET total_u = ?, updated_at = datetime('now','localtime') WHERE id = ?`)
+        .run(totalUdup, dup.id);
+      ensureRackLayout(roomId, dup.id);
+      return { id: dup.id, action: 'update' };
+    }
+  }
+
   const totalU = Number(fields.nb_u) > 0 ? Number(fields.nb_u) : 42;
   const newId = crypto.randomUUID();
   const input: DcRackCreateInput = {

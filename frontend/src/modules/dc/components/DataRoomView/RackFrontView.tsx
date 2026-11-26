@@ -34,10 +34,13 @@ function unwrapCiResp(data: unknown): CiChainResp | null {
   return (d as CiChainResp) ?? null;
 }
 
-/** iTop 类 → 中文展示名 */
+/** iTop 类 → 中文展示名
+ *  VmOs 是本地虚拟类（非 iTop 类）：-VM 后缀对象背后真正承载业务的「操作系统层」CI，
+ *  iTop 里它同样存成 VirtualMachine，但语义是 OS，故单独命名以免与虚拟化层的虚拟机混淆。 */
 const ciClassLabel: Record<string, string> = {
   Server: '物理服务器',
   VirtualMachine: '虚拟机',
+  VmOs: '操作系统',
   Hypervisor: '虚拟化宿主',
   DBServer: '数据库实例',
   NetworkDevice: '网络设备',
@@ -225,7 +228,7 @@ export default function RackFrontView({ rack, slots, onClose, scheme }: Props) {
     <div className="absolute left-4 top-1/2 -translate-y-1/2 z-30">
       {/* 主弹窗（级联列渲染在其右侧，因此外层不再裁剪溢出） */}
       <div
-        className="w-[400px] max-h-[88vh] flex flex-col backdrop-blur-xl rounded-xl shadow-2xl overflow-hidden transition-all duration-300"
+        className="w-[400px] max-h-[88vh] flex flex-col rounded-xl shadow-2xl overflow-hidden"
         style={{ background: scheme.modalBg, border: `1px solid ${scheme.modalBorder}` }}
       >
         {/* 头部 */}
@@ -425,7 +428,7 @@ function CiColumn({
 
   return (
     <div
-      className="w-[230px] max-h-[80vh] flex flex-col backdrop-blur-xl rounded-xl shadow-2xl overflow-hidden"
+      className="w-[230px] max-h-[80vh] flex flex-col rounded-xl shadow-2xl overflow-hidden"
       style={{ background: scheme.modalBg, border: `1px solid ${scheme.modalBorder}` }}
     >
       {/* 列头 */}

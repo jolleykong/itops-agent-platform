@@ -1,5 +1,5 @@
 /**
- * 机房查看悬浮层（顶栏 + 指标 + 左侧机柜状态 + 配色 + 底部告警）
+ * 机房看板悬浮层（顶栏 + 指标 + 左侧机柜状态 + 配色 + 底部告警）
  *
  * 2026-11-26 性能改造：
  * - 移除 backdrop-filter 毛玻璃（大面板叠加时是最贵的合成操作）
@@ -108,7 +108,7 @@ function DashboardOverlay({
         </div>
 
         <h1 className="text-2xl font-bold tracking-[5px]" style={{ color: scheme.text }}>
-          机房查看
+          机房看板
         </h1>
 
         <div className="flex items-center gap-4">
