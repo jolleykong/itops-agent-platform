@@ -83,7 +83,14 @@ export function upsertRack(
     );
   }
 
-  if (existingId) {
+  // existingId 来自同步状态里的 itop_id_map，可能指向已被删除的行（去重清理、手工删柜）。
+  // 此时 UPDATE 会静默影响 0 行、后续 syncDeviceSlot 又会用悬空 rack_id 插槽位（FK 失败），
+  // 因此先确认行还在。
+  const alive = existingId
+    ? (db.prepare('SELECT id FROM dc_racks WHERE id = ?').get(existingId) as { id: string } | undefined)
+    : undefined;
+
+  if (alive) {
     // 只更新 name / total_u / room_id（COALESCE 保留原值）
     // nb_u 坑：iTop 机柜 nb_u 常为空 → REST 返回 '' → `'' ?? 42` 不兜空串 → total_u 存成 ''。
     // 必须显式数值化，空/0 一律回退 42U 标准柜。
@@ -91,25 +98,23 @@ export function upsertRack(
     db.prepare(`
       UPDATE dc_racks SET name = ?, total_u = ?, room_id = COALESCE(?, room_id), updated_at = datetime('now','localtime')
       WHERE id = ?
-    `).run(fields.name, totalU, roomId, existingId);
-    ensureRackLayout(roomId, existingId);
-    return { id: existingId, action: 'update' };
+    `).run(fields.name, totalU, roomId, alive.id);
+    ensureRackLayout(roomId, alive.id);
+    return { id: alive.id, action: 'update' };
   }
 
   // 幂等兜底：idMap 是同步状态的一部分，一旦丢失/重置（换库、清 state、手工删行），
   // 仅靠 existingId 会在同一机房内重复建柜 —— 现网曾出现 19 组同名机柜（一个空柜一个实柜）。
   // 因此在 create 前按 (room_id, name) 再查一次，命中即转为更新。
-  if (!existingId) {
-    const dup = db
-      .prepare('SELECT id FROM dc_racks WHERE room_id = ? AND name = ? ORDER BY id LIMIT 1')
-      .get(roomId, fields.name) as { id: string } | undefined;
-    if (dup) {
-      const totalUdup = Number(fields.nb_u) > 0 ? Number(fields.nb_u) : 42;
-      db.prepare(`UPDATE dc_racks SET total_u = ?, updated_at = datetime('now','localtime') WHERE id = ?`)
-        .run(totalUdup, dup.id);
-      ensureRackLayout(roomId, dup.id);
-      return { id: dup.id, action: 'update' };
-    }
+  const dup = db
+    .prepare('SELECT id FROM dc_racks WHERE room_id = ? AND name = ? ORDER BY id LIMIT 1')
+    .get(roomId, fields.name) as { id: string } | undefined;
+  if (dup) {
+    const totalUdup = Number(fields.nb_u) > 0 ? Number(fields.nb_u) : 42;
+    db.prepare(`UPDATE dc_racks SET total_u = ?, updated_at = datetime('now','localtime') WHERE id = ?`)
+      .run(totalUdup, dup.id);
+    ensureRackLayout(roomId, dup.id);
+    return { id: dup.id, action: 'update' };
   }
 
   const totalU = Number(fields.nb_u) > 0 ? Number(fields.nb_u) : 42;
