@@ -95,18 +95,33 @@ function ipToNumber(ip: string): number {
 
 const DEFAULT_CONFIG = { windowMs: env.RATE_LIMIT_WINDOW_MS, max: env.RATE_LIMIT_MAX };
 
+/**
+ * 完整请求路径。
+ * 限流中间件是挂在 `app.use(mod.path, rateLimiter, router)` 上的，
+ * 此时 `req.path` 只剩挂载点之后的部分（`/overview`），
+ * 用它对配置表做 startsWith 匹配会全部落空、退化成默认阈值。
+ * 必须用 `baseUrl + path`（`/api/v1/dc/overview`）。
+ */
+function fullPath(req: Request): string {
+  return `${req.baseUrl || ''}${req.path}`;
+}
+
 function getClientKey(req: Request): string {
   const ip = req.ip || req.socket.remoteAddress || 'unknown';
-  return `${ip}:${req.method}:${req.path}`;
+  return `${ip}:${req.method}:${fullPath(req)}`;
 }
 
 function findMatchingConfig(path: string): { windowMs: number; max: number } {
+  // 取「最长前缀」匹配：/api/v1/auth/login 必须优先于 /api/v1/auth
+  let best: { windowMs: number; max: number } | null = null;
+  let bestLen = -1;
   for (const [routePath, cfg] of Object.entries(rateLimitConfig)) {
-    if (path.startsWith(routePath)) {
-      return cfg;
+    if (path.startsWith(routePath) && routePath.length > bestLen) {
+      best = cfg;
+      bestLen = routePath.length;
     }
   }
-  return DEFAULT_CONFIG;
+  return best ?? DEFAULT_CONFIG;
 }
 
 /**
@@ -167,7 +182,7 @@ export function rateLimiter(req: Request, res: Response, next: NextFunction) {
     return next();
   }
 
-  const config = findMatchingConfig(req.path);
+  const config = findMatchingConfig(fullPath(req));
   const key = getClientKey(req);
   const now = Date.now();
 
