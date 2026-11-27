@@ -22,13 +22,14 @@ import db from '../../../models/database';
 import { logger } from '../../../utils/logger';
 import { itopClient } from '../../cmdb-sync/services/itopClient';
 import { findDbHostsByOsHost, findDbHostsByDbServerName, osNameMatchesHost } from './zabbixDbMapService';
+import { fetchNetobsByHost, groupByIfname, groupByVid, type NetobsRow } from './cipipeAdjacencyService';
 
 // ============================================================
 // 类型
 // ============================================================
 
 export interface CiChainNode {
-  /** iTop 类名，本地虚拟类：OsHost（Zabbix OS 层）/ Rack / Room */
+  /** iTop 类名，本地虚拟类：OsHost（Zabbix OS 层）/ NetPort（交换机端口）/ Vlan / IpAddr / Rack / Room */
   class: string;
   name: string;
   /** 与父节点（被展开节点）的关系说明 */
@@ -278,13 +279,30 @@ export async function getCiChain(params: {
     }
   }
 
-  // ── 2. 本地虚拟类分支（不查 iTop） ──
+  // ── 2. 本地虚拟类分支（不查 iTop 实体类） ──
   if (className === 'OsHost') {
     return osHostChain(name);
   }
   // VmOs：虚拟机的操作系统层 CI（iTop 里存成 VirtualMachine，语义是 OS）
   if (className === 'VmOs') {
     return vmOsChain(name);
+  }
+  // NetPort / Vlan：网络邻接链路虚拟类（数据源 cipipe netobs，见下）
+  if (className === 'NetPort') {
+    return netPortChain(name);
+  }
+  if (className === 'Vlan') {
+    return vlanChain(name);
+  }
+  // IpAddr：未落 CMDB 的邻接对端（叶子节点，展开只给提示）
+  if (className === 'IpAddr') {
+    return {
+      self: { class: 'IpAddr', name },
+      parents: [],
+      children: [],
+      source: 'none',
+      degraded: '该 IP 未落 CMDB（cipipe 裁决为 none/conflict，待登记或裁决后自动入链）',
+    };
   }
   if (className === 'Rack' || className === 'Room') {
     return rackRoomChain(className, name);
@@ -383,6 +401,36 @@ export async function getCiChain(params: {
     children.push(...localOsChildren(name));
   }
 
+  // 网络设备：设备 → 端口/VLAN → 下一节点 递归展开（2026-11-27 用户定则）
+  // 端口/VLAN 数据两个来源：① iTop PhysicalInterface（CMDB 权威，交换机侧
+  // 端口同步上线前多为空）② cipipe netobs ARP 邻接（观测态，已裁决）。
+  if (self.class === 'NetworkDevice') {
+    // ① iTop 本机端口（CMDB 权威）
+    const piRows = await listByOQL(
+      'PhysicalInterface',
+      `SELECT PhysicalInterface WHERE connectableci_id_friendlyname = '${esc(name)}'`,
+      'name,description',
+    );
+    for (const r of piRows) {
+      const n = fieldStr(r.fields, 'name') ?? String(r.key);
+      children.push({
+        class: 'PhysicalInterface',
+        name: n,
+        relation: '本机端口（CMDB）',
+        extra: fieldStr(r.fields, 'description'),
+      });
+    }
+    // ② cipipe ARP 邻接：端口与 VLAN 虚拟节点（host 键：iTop 名 = 管理 IP）
+    const host = selfIp || name;
+    const obs = await fetchNetobsByHost(host);
+    if (obs.length === 0 && host !== name) {
+      // 名称不是纯 IP 的设备（博科FC交换机6505-10.240.1.241）：再按名称尾部的 IP 试一次
+      const ipTail = name.match(/(\d{1,3}(?:\.\d{1,3}){3})$/);
+      if (ipTail) obs.push(...(await fetchNetobsByHost(ipTail[1])));
+    }
+    children.push(...netobsAdjacencyChildren(obs, host));
+  }
+
   // 虚拟机的「另一层」关联（v3.21）：
   // iTop 里同一台虚拟机常有两个 CI ——
   //   虚拟化层 = vCenter 发现对象，可见名 {vCenter名}-VM，通常 production
@@ -429,6 +477,159 @@ export async function getCiChain(params: {
     parents,
     children,
     source: 'itop',
+  };
+}
+
+// ============================================================
+// 网络邻接链路（设备 → 端口/VLAN → 下一节点）
+// 数据源：cipipe netobs（ARP 观测 + 计算层优先裁决）；虚拟类 NetPort/Vlan/IpAddr
+// 名称编码：`<端口或vid>@<交换机host>` —— 展开请求只携带 class+name，host 必须内嵌
+// ============================================================
+
+const NETOBS_KEY_RE = /^([^@]+)@(.+)$/;
+
+/** 解码 `x@host` 编码；非法形态返回 null */
+function decodeNetobsKey(name: string): { key: string; host: string } | null {
+  const m = name.match(NETOBS_KEY_RE);
+  return m ? { key: m[1], host: m[2] } : null;
+}
+
+/** iTop VLAN vlan_tag → description（命名对照，一次拉全量缓存调用内使用） */
+async function vlanDescriptions(): Promise<Map<string, string>> {
+  const rows = await listByOQL('VLAN', 'SELECT VLAN', 'vlan_tag,description');
+  const m = new Map<string, string>();
+  for (const r of rows) {
+    const tag = fieldStr(r.fields, 'vlan_tag');
+    const desc = fieldStr(r.fields, 'description');
+    if (tag && desc) m.set(tag, desc);
+  }
+  return m;
+}
+
+/**
+ * 一组观测 → 下一节点列表：
+ *   unique/dedup 且具名 → 已裁决 CI（可继续递归展开）；
+ *   其余 → IpAddr 叶子（conflict=冲突待裁决，none=未落 CMDB）。
+ */
+function nextHopNodes(rows: NetobsRow[]): CiChainNode[] {
+  const out: CiChainNode[] = [];
+  const seenCi = new Set<string>();
+  const seenIp = new Set<string>();
+  for (const r of rows) {
+    if ((r.match_kind === 'unique' || r.match_kind === 'dedup') && r.ci_name) {
+      const k = `${r.ci_class}:${r.ci_name}`;
+      if (!seenCi.has(k)) {
+        seenCi.add(k);
+        out.push({ class: r.ci_class || 'FunctionalCI', name: r.ci_name, relation: '邻接下一跳', ip: r.ip || undefined });
+      }
+      continue;
+    }
+    if (!r.ip || seenIp.has(r.ip)) continue;
+    seenIp.add(r.ip);
+    out.push({
+      class: 'IpAddr',
+      name: r.ip,
+      relation: r.match_kind === 'conflict' ? '冲突邻接（cipipe 待裁决）' : '未裁决邻接（未落 CMDB）',
+      extra: r.mac || undefined,
+    });
+  }
+  return out;
+}
+
+/** 网络设备 children 追加：端口节点 + VLAN 节点（观测态，端口按自然序、VLAN 按数值序） */
+function netobsAdjacencyChildren(obs: NetobsRow[], host: string): CiChainNode[] {
+  const out: CiChainNode[] = [];
+  if (obs.length === 0) return out;
+
+  const byPort = groupByIfname(obs);
+  const byVid = groupByVid(obs);
+
+  // 端口节点（VLAN 接口 VlNNN 也是「端口」，与物理口一起展示）
+  const portNames = [...byPort.keys()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  for (const p of portNames) {
+    const rows = byPort.get(p) ?? [];
+    const vids = [...new Set(rows.map(r => r.vid).filter(Boolean))];
+    const hosts = new Set(rows.map(r => r.ip).filter(Boolean)).size;
+    out.push({
+      class: 'NetPort',
+      name: `${p}@${host}`,
+      relation: /^Vl\d+$/.test(p) ? 'VLAN 接口（SVI）' : '端口（ARP 邻接）',
+      extra: [vids.length ? `VLAN ${vids.join('/')}` : '', hosts ? `${hosts} 个邻接` : ''].filter(Boolean).join(' · ') || undefined,
+      ip: host,
+    });
+  }
+
+  // VLAN 节点
+  const vids = [...byVid.keys()].sort((a, b) => Number(a) - Number(b));
+  for (const v of vids) {
+    const rows = byVid.get(v) ?? [];
+    const hosts = new Set(rows.map(r => r.ip).filter(Boolean)).size;
+    out.push({
+      class: 'Vlan',
+      name: `${v}@${host}`,
+      relation: `VLAN ${v}`,
+      extra: hosts ? `${hosts} 个邻接` : undefined,
+    });
+  }
+  return out;
+}
+
+/** NetPort 展开：端口信息卡 + 端口 VLAN + 邻接下一跳 */
+async function netPortChain(encoded: string): Promise<CiChain> {
+  const dec = decodeNetobsKey(encoded);
+  if (!dec) {
+    return { self: null, parents: [], children: [], source: 'none', degraded: '端口节点名称格式异常（应为 端口@交换机）' };
+  }
+  const { key: ifname, host } = dec;
+  const obs = (await fetchNetobsByHost(host)).filter(r => r.ifname === ifname);
+  const children: CiChainNode[] = [];
+  if (obs.length === 0) {
+    return {
+      self: { class: 'NetPort', name: ifname, ip: host },
+      parents: [{ class: 'NetworkDevice', name: host, relation: '所属交换机' }],
+      children: [],
+      source: 'none',
+      degraded: 'cipipe 无该端口的 ARP 观测',
+    };
+  }
+  // 端口承载的 VLAN（多 vid = trunk 口）
+  for (const v of [...new Set(obs.map(r => r.vid).filter(Boolean))].sort((a, b) => Number(a) - Number(b))) {
+    children.push({ class: 'Vlan', name: `${v}@${host}`, relation: '端口 VLAN' });
+  }
+  children.push(...nextHopNodes(obs));
+  return {
+    self: { class: 'NetPort', name: ifname, ip: host, extra: `${obs.length} 条 ARP 观测` },
+    parents: [{ class: 'NetworkDevice', name: host, relation: '所属交换机' }],
+    children,
+    source: 'local',
+  };
+}
+
+/** Vlan 展开：VLAN 命名（iTop 裁决名）+ 该 VLAN 内邻接下一跳 */
+async function vlanChain(encoded: string): Promise<CiChain> {
+  const dec = decodeNetobsKey(encoded);
+  if (!dec) {
+    return { self: null, parents: [], children: [], source: 'none', degraded: 'VLAN 节点名称格式异常（应为 vid@交换机）' };
+  }
+  const { key: vid, host } = dec;
+  const obs = (await fetchNetobsByHost(host)).filter(r => r.vid === vid);
+  let vlanName: string | undefined;
+  try {
+    vlanName = (await vlanDescriptions()).get(vid);
+  } catch {
+    vlanName = undefined; // iTop VLAN 命名不可得时退回纯 vid 展示
+  }
+  const children = obs.length > 0 ? nextHopNodes(obs) : [];
+  return {
+    self: {
+      class: 'Vlan',
+      name: vlanName ? `VLAN ${vid} · ${vlanName}` : `VLAN ${vid}`,
+      extra: obs.length ? `${obs.length} 条 ARP 观测` : undefined,
+    },
+    parents: [{ class: 'NetworkDevice', name: host, relation: '观测交换机' }],
+    children,
+    source: obs.length > 0 ? 'local' : 'none',
+    degraded: obs.length === 0 ? 'cipipe 无该交换机在此 VLAN 的观测' : undefined,
   };
 }
 

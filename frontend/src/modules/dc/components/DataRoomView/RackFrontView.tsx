@@ -51,6 +51,11 @@ const ciClassLabel: Record<string, string> = {
   Rack: '机柜',
   Room: '机房',
   FunctionalCI: 'CI 对象',
+  // 网络邻接链路虚拟类（cipipe netobs 观测态）
+  PhysicalInterface: '物理端口',
+  NetPort: '端口',
+  Vlan: 'VLAN',
+  IpAddr: 'IP 邻接',
 };
 
 /** iTop status 枚举 → 状态点颜色 */

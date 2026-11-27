@@ -82,12 +82,14 @@ export const slotsRepo = {
         COALESCE(ser.name, nd.name, vm.name, pdu.name, s.device_id) as device_name,
         COALESCE(ser.ip_address, nd.ip_address, pdu.ip_address, '') as ip_address,
         COALESCE(
-          CASE WHEN ser.enabled = 1 THEN 'online' ELSE 'offline' END,
+          -- 非服务器行 ser 必为 NULL：CASE 必须返回 NULL 才能让 nd/vm/pdu 状态生效，
+          -- 否则 COALESCE 恒取 'offline'，网络设备等全部假红点（2026-11-27 修复）
+          CASE WHEN ser.id IS NULL THEN NULL WHEN ser.enabled = 1 THEN 'online' ELSE 'offline' END,
           nd.status,
           vm.status,
           pdu.status
         ) as device_status,
-        CASE WHEN ser.enabled = 1 THEN 'online' ELSE 'offline' END as server_status,
+        CASE WHEN ser.id IS NULL THEN NULL WHEN ser.enabled = 1 THEN 'online' ELSE 'offline' END as server_status,
         ser.cpu_cores, (ser.memory_gb * 1000) as memory_mb,
         (SELECT cpu_usage FROM server_metrics WHERE server_id = ser.id ORDER BY collected_at DESC LIMIT 1) as cpu_usage,
         (SELECT memory_usage FROM server_metrics WHERE server_id = ser.id ORDER BY collected_at DESC LIMIT 1) as memory_usage,
@@ -110,12 +112,14 @@ export const slotsRepo = {
         COALESCE(ser.name, nd.name, vm.name, pdu.name, s.device_id) as device_name,
         COALESCE(ser.ip_address, nd.ip_address, pdu.ip_address, '') as ip_address,
         COALESCE(
-          CASE WHEN ser.enabled = 1 THEN 'online' ELSE 'offline' END,
+          -- 非服务器行 ser 必为 NULL：CASE 必须返回 NULL 才能让 nd/vm/pdu 状态生效，
+          -- 否则 COALESCE 恒取 'offline'，网络设备等全部假红点（2026-11-27 修复）
+          CASE WHEN ser.id IS NULL THEN NULL WHEN ser.enabled = 1 THEN 'online' ELSE 'offline' END,
           nd.status,
           vm.status,
           pdu.status
         ) as device_status,
-        CASE WHEN ser.enabled = 1 THEN 'online' ELSE 'offline' END as server_status,
+        CASE WHEN ser.id IS NULL THEN NULL WHEN ser.enabled = 1 THEN 'online' ELSE 'offline' END as server_status,
         ser.cpu_cores, (ser.memory_gb * 1000) as memory_mb,
         -- 最近一次采集的 CPU/MEM/Disk 使用率（来自 server_metrics 表）
         (SELECT cpu_usage FROM server_metrics WHERE server_id = ser.id ORDER BY collected_at DESC LIMIT 1) as cpu_usage,

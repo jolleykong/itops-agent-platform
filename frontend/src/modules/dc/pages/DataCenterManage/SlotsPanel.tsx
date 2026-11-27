@@ -53,7 +53,8 @@ export default function SlotsPanel({ rack, slots, onSelectSlot, onAddDevice }: P
         >
           <div className="w-10 text-[10px] text-text-tertiary text-center shrink-0">{u}</div>
           <div className="flex-1 flex items-center px-2 gap-2">
-            <div className={`w-2 h-2 rounded-full ${slot.server_status === 'online' ? 'bg-green-500' : 'bg-red-500'}`} />
+            {/* 状态点：server 用 server_status，其余设备用 device_status；unknown 灰点不冒红 */}
+            <div className={`w-2 h-2 rounded-full ${(() => { const st = slot.device_status || slot.server_status; return st === 'online' ? 'bg-green-500' : st === 'offline' ? 'bg-red-500' : st === 'warning' ? 'bg-orange-500' : 'bg-gray-500'; })()}`} />
             <span className="text-xs font-medium text-text-primary">{slot.device_name || '(未命名)'}</span>
             <Tag className="text-[10px] leading-none m-0" color="blue">
               {typeLabelMap[slot.device_type as string] || slot.device_type}
