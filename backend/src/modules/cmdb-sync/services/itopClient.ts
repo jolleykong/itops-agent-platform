@@ -57,6 +57,38 @@ export interface ITopClientConfig {
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 
+/**
+ * 传输层瞬时故障的重试策略。
+ *
+ * 背景：本服务的 DB 兼容层（models/database/mysql/syncDriver.ts）用 Atomics.wait
+ * 在主线程同步等待 worker 结果，长事务期间 event loop 会被短时冻结；期间到达的
+ * FIN 无法及时读取，表现为 `socket hang up`。这类失败与 iTop 无关，重试即可成功。
+ *
+ * 只重试「连接层故障 / 5xx」，绝不重试业务错误（code!=0）与 4xx：
+ * 后两者重试无意义，且反复失败认证可能触发 iTop 账号锁定。
+ */
+const RETRY_MAX_ATTEMPTS = 3; // 首次 + 2 次重试
+const RETRY_BASE_DELAY_MS = 300; // 退避基数：300ms、600ms
+
+/** 单次尝试的结果，比 ITopResult 多一个 retryable 标记供外层决策 */
+interface AttemptResult<T> {
+  success: boolean;
+  data?: T;
+  error?: string;
+  retryable?: boolean;
+}
+
+/** 判断错误是否属于「可重试的传输层故障」 */
+function isRetryableError(error: unknown): boolean {
+  const e = error as AxiosError & { code?: string };
+  const code = e?.code ?? '';
+  if (['ECONNRESET', 'EPIPE', 'ETIMEDOUT', 'EAI_AGAIN', 'ECONNABORTED'].includes(code)) {
+    return true;
+  }
+  const msg = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  return msg.includes('socket hang up');
+}
+
 class ITopClient {
   private config: ITopClientConfig | null = null;
 
@@ -121,7 +153,9 @@ class ITopClient {
   }
 
   /**
-   * 核心请求方法 — 向 iTop REST API 发送 JSON POST
+   * 核心请求方法 — 带传输层重试的入口
+   *
+   * 重试仅针对连接层瞬时故障与 5xx；业务错误/4xx 立即返回（见 isRetryableError）。
    */
   private async request<T = ITopEnvelope>(
     payload: Record<string, unknown>,
@@ -132,6 +166,43 @@ class ITopClient {
       return { success: false, error: 'iTop 未配置：请先设置 API 地址和认证信息' };
     }
 
+    let last: AttemptResult<T> | null = null;
+
+    for (let attempt = 1; attempt <= RETRY_MAX_ATTEMPTS; attempt++) {
+      last = await this.attemptRequest<T>(payload, config);
+
+      if (last.success) {
+        return { success: true, data: last.data };
+      }
+      // 业务错误 / 4xx 重试无意义，立即返回
+      if (!last.retryable) {
+        return { success: false, error: last.error };
+      }
+      if (attempt < RETRY_MAX_ATTEMPTS) {
+        const delay = RETRY_BASE_DELAY_MS * attempt;
+        logger.warn(
+          `iTop API 瞬时故障（第 ${attempt}/${RETRY_MAX_ATTEMPTS} 次），${delay}ms 后重试: ${(last.error ?? '').slice(0, 200)}`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+
+    logger.error(
+      `iTop API 重试 ${RETRY_MAX_ATTEMPTS} 次仍失败: ${(last?.error ?? '').slice(0, 300)}`,
+    );
+    return {
+      success: false,
+      error: `${last?.error ?? '未知错误'}（已重试 ${RETRY_MAX_ATTEMPTS - 1} 次）`,
+    };
+  }
+
+  /**
+   * 单次请求尝试（不含重试逻辑）
+   */
+  private async attemptRequest<T = ITopEnvelope>(
+    payload: Record<string, unknown>,
+    config: ITopClientConfig,
+  ): Promise<AttemptResult<T>> {
     try {
       // iTop REST API 通过 form-data 传递 json_data + auth 参数
       const formData = new URLSearchParams();
@@ -166,6 +237,8 @@ class ITopClient {
           .trim();
         return {
           success: false,
+          // 仅 5xx（服务端临时故障）值得重试；4xx 是请求本身的问题
+          retryable: response.status >= 500,
           error: `HTTP ${response.status} ${response.statusText || ''}`.trim() +
             (plain ? `: ${plain.slice(0, 1500)}` : ''),
         };
@@ -201,10 +274,20 @@ class ITopClient {
     } catch (error) {
       const axiosError = error as AxiosError;
       if (axiosError.code === 'ECONNABORTED') {
-        return { success: false, error: `iTop API 请求超时 (${config.timeoutMs}ms)` };
+        // 超时通常是服务端慢或本端 event loop 冻结，重试可能有效
+        return {
+          success: false,
+          retryable: true,
+          error: `iTop API 请求超时 (${config.timeoutMs}ms)`,
+        };
       }
       if (axiosError.code === 'ECONNREFUSED' || axiosError.code === 'ENOTFOUND') {
-        return { success: false, error: `无法连接 iTop: ${axiosError.code}` };
+        // 连接被拒 / DNS 失败：可能是瞬时网络抖动，允许重试
+        return {
+          success: false,
+          retryable: true,
+          error: `无法连接 iTop: ${axiosError.code}`,
+        };
       }
       const msg = error instanceof Error ? error.message : String(error);
       const respData = (axiosError as AxiosError).response?.data;
@@ -213,8 +296,7 @@ class ITopClient {
             typeof respData === 'string' ? respData.slice(0, 1200) : JSON.stringify(respData).slice(0, 1200)
           }`
         : '';
-      logger.error('iTop API request failed:', error as Error);
-      return { success: false, error: `${msg}${detail}` };
+      return { success: false, retryable: isRetryableError(error), error: `${msg}${detail}` };
     }
   }
 

@@ -161,6 +161,54 @@ export const cmdbSyncLogRepo = {
     );
   },
 
+  /**
+   * 批量写入同步日志 —— 用一条多行 INSERT 代替 N 次单条 insert。
+   *
+   * 为什么需要：cmdb-sync 每轮为每台 CI 写一条日志（Server 类 1500+ 条），逐条 insert
+   * 会产生同等数量的同步 DB 往返。本项目的 MySQL 兼容层在主线程用 Atomics.wait 同步
+   * 等待结果，往返次数直接换算成 event loop 的冻结时长；冻结期间 keep-alive 连接读到
+   * 对端 FIN 会被误判为 "socket hang up"。合并成多行 INSERT 后，往返次数从「每 CI 一次」
+   * 降到「每批一次」。
+   */
+  insertMany(logs: CmdbSyncLogInput[]): void {
+    if (logs.length === 0) return;
+
+    // 每行 13 列，其中 timestamp 用 SQL 表达式，剩 12 个占位符
+    const ROW_PARAMS = 12;
+    const MAX_BATCH = 200; // 控制单条 SQL 长度，避免超过 max_allowed_packet
+
+    for (let offset = 0; offset < logs.length; offset += MAX_BATCH) {
+      const chunk = logs.slice(offset, offset + MAX_BATCH);
+      // 每行第 3 位固定为 datetime('now','localtime') 表达式
+      const placeholders = chunk
+        .map(() => `(?, ?, datetime('now','localtime'), ${Array(ROW_PARAMS - 2).fill('?').join(', ')})`)
+        .join(', ');
+
+      const params: unknown[] = [];
+      for (const log of chunk) {
+        params.push(
+          randomUUID(),
+          log.sync_batch_id,
+          log.direction,
+          log.ci_type,
+          log.action,
+          log.itop_id ?? null,
+          log.itop_class ?? null,
+          log.platform_id ?? null,
+          log.platform_table ?? null,
+          log.success === false ? 0 : 1,
+          log.message ?? null,
+          log.details ?? null,
+        );
+      }
+
+      db.prepare(`
+        INSERT INTO cmdb_sync_log (id, sync_batch_id, timestamp, direction, ci_type, action, itop_id, itop_class, platform_id, platform_table, success, message, details)
+        VALUES ${placeholders}
+      `).run(...params);
+    }
+  },
+
   list(filters?: {
     ci_type?: string;
     direction?: string;

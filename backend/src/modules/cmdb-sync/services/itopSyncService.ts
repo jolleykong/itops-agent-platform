@@ -17,7 +17,7 @@ import { randomUUID } from 'crypto';
    保证「数据写入 + idMap 更新」原子性（better-sqlite3 的事务 API 必须直接持有 db 实例）*/
 import db from '../../../models/database';
 import { logger } from '../../../utils/logger';
-import { cmdbSyncStateRepo, cmdbSyncLogRepo } from '../../../repositories';
+import { cmdbSyncStateRepo, cmdbSyncLogRepo, type CmdbSyncLogInput } from '../../../repositories';
 import { itopClient } from './itopClient';
 import { itopConfigService } from './itopConfigService';
 import {
@@ -150,10 +150,11 @@ async function syncAll(): Promise<SyncResult> {
 // ============================================================
 
 /**
- * 对单个 CI 类型执行：取数 → 逐条 upsert → 记日志 → 更新 state
+ * 对单个 CI 类型执行：取数 → 分批 upsert → 记日志 → 更新 state
  *
- * 事务边界：整个 CI 类型的「数据写入 + idMap 更新」包裹在 better-sqlite3 事务里，
+ * 事务边界：按 200 条一批提交，「本批数据写入 + idMap 更新」在同一事务内，
  * 保证中途失败时不会留下「数据已写但 idMap 未更新」的脏状态（否则下次同步会重复创建）。
+ * 批与批之间让出 event loop —— 见下方循环处的说明。
  */
 async function syncCIs<TFields>(
   strategy: SyncStrategy<TFields>,
@@ -205,46 +206,14 @@ async function syncCIs<TFields>(
     return [`${stats.errors} 条失败`, ...lines].join('\n');
   };
 
-  // 事务：保证 upsert 数据 + idMap 落库的原子性
-  const tx = db.transaction(() => {
-    for (const obj of Object.values(result.data!.objects)) {
-      stats.pulled++;
-      const fields = obj.fields;
-      const itopId = String(obj.key);
+  // 分批提交：原实现把整类 CI 包在单个事务里同步执行，Server 类 1500+ 条会产生近万次
+  // 同步 DB 往返。MySQL 兼容层在主线程用 Atomics.wait 等待结果，这段时间 event loop 完全
+  // 冻结 → keep-alive 连接读不到对端 FIN，恢复后报 "socket hang up"。
+  // 改为每批一个事务，批间 setImmediate 让出 event loop，网络 IO 得以处理。
+  const entries = Object.values(result.data.objects);
+  const BATCH_SIZE = 200;
 
-      try {
-        const res = strategy.upsert(fields, { existingId: idMap[itopId], idMap });
-        idMap[itopId] = res.platformId;
-
-        if (res.action === 'skip') {
-          cmdbSyncLogRepo.insert({
-            sync_batch_id: batchId, direction: 'pull', ci_type: ciType, action: 'skip',
-            itop_id: itopId, platform_id: res.platformId || null,
-            platform_table: res.table ?? null, success: true, message: res.message,
-          });
-          continue;
-        }
-
-        if (res.action === 'create') stats.created++;
-        else stats.updated++;
-
-        cmdbSyncLogRepo.insert({
-          sync_batch_id: batchId, direction: 'pull', ci_type: ciType, action: res.action,
-          itop_id: itopId, platform_id: res.platformId, platform_table: res.table ?? null,
-          success: true, message: res.message,
-        });
-      } catch (err) {
-        stats.errors++;
-        const msg = err instanceof Error ? err.message : String(err);
-        recordError(itopId, msg);
-        cmdbSyncLogRepo.insert({
-          sync_batch_id: batchId, direction: 'pull', ci_type: ciType, action: 'error',
-          itop_id: itopId, success: false,
-          message: `iTop id=${itopId}: ${msg}`,
-        });
-      }
-    }
-
+  const updateState = () =>
     cmdbSyncStateRepo.upsert(ciType, {
       last_sync_at: new Date().toISOString(),
       last_sync_duration_ms: Date.now() - start,
@@ -253,9 +222,67 @@ async function syncCIs<TFields>(
       last_error: formatErrors(),
       itop_id_map: JSON.stringify(idMap),
     });
-  });
 
-  tx();
+  // 空结果也要落一次 state（记录本次同步成功但无数据）
+  if (entries.length === 0) {
+    updateState();
+  }
+
+  for (let offset = 0; offset < entries.length; offset += BATCH_SIZE) {
+    const slice = entries.slice(offset, offset + BATCH_SIZE);
+    // 本批日志先收集、再一次性多行写入（详见 cmdbSyncLogRepo.insertMany 的注释）
+    const pendingLogs: CmdbSyncLogInput[] = [];
+
+    // 事务：保证「本批 upsert 数据 + idMap 落库」的原子性
+    const tx = db.transaction(() => {
+      for (const obj of slice) {
+        stats.pulled++;
+        const fields = obj.fields;
+        const itopId = String(obj.key);
+
+        try {
+          const res = strategy.upsert(fields, { existingId: idMap[itopId], idMap });
+          idMap[itopId] = res.platformId;
+
+          if (res.action === 'skip') {
+            pendingLogs.push({
+              sync_batch_id: batchId, direction: 'pull', ci_type: ciType, action: 'skip',
+              itop_id: itopId, platform_id: res.platformId || null,
+              platform_table: res.table ?? null, success: true, message: res.message,
+            });
+            continue;
+          }
+
+          if (res.action === 'create') stats.created++;
+          else stats.updated++;
+
+          pendingLogs.push({
+            sync_batch_id: batchId, direction: 'pull', ci_type: ciType, action: res.action,
+            itop_id: itopId, platform_id: res.platformId, platform_table: res.table ?? null,
+            success: true, message: res.message,
+          });
+        } catch (err) {
+          stats.errors++;
+          const msg = err instanceof Error ? err.message : String(err);
+          recordError(itopId, msg);
+          pendingLogs.push({
+            sync_batch_id: batchId, direction: 'pull', ci_type: ciType, action: 'error',
+            itop_id: itopId, success: false,
+            message: `iTop id=${itopId}: ${msg}`,
+          });
+        }
+      }
+
+      cmdbSyncLogRepo.insertMany(pendingLogs);
+      updateState();
+    });
+
+    tx();
+    pendingLogs.length = 0;
+
+    // 批间让出 event loop：处理积压的 socket 读写（含对端 FIN），避免被误判为连接中断
+    await new Promise((resolve) => setImmediate(resolve));
+  }
 
   summary[ciType] = stats;
   logger.info(
