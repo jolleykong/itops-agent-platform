@@ -26,6 +26,7 @@ import { auditRoutes } from './audit/routes';
 import { autoRoutes } from './auto/routes';
 import { backupRoutes } from './backup/routes';
 import { changeManagementRoutes } from './change-management/routes';
+import { cmdbPortalRoutes } from './cmdb-portal/routes';
 import { configManagementRoutes } from './config-management/routes';
 import { containerRoutes } from './containers/routes';
 import { databaseRoutes } from './database/routes';
@@ -58,6 +59,7 @@ export const protectedRoutes = [
   ...autoRoutes,
   ...backupRoutes,
   ...changeManagementRoutes,
+  ...cmdbPortalRoutes,
   ...configManagementRoutes,
   ...containerRoutes,
   ...databaseRoutes,

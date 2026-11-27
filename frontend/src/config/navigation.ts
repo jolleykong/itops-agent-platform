@@ -56,6 +56,8 @@ import {
   FileSearch,
   Archive,
   SlidersHorizontal,
+  Gauge,
+  Waypoints,
   type LucideIcon,
 } from "lucide-react";
 
@@ -74,11 +76,18 @@ export type NavGroup = {
 /** 侧边栏导航分组配置 */
 export const navigationGroups: NavGroup[] = [
   {
+    // 2026-11-27：「首页」更名「看板」，作为驾驶舱/看板聚合入口；
+    // 机房看板自数据中心组移入；新增 4 个 CIO 驾驶舱大屏（cmdb-portal 模块 demo）。
     name: "nav.home",
     icon: Home,
     items: [
       { name: "nav.dashboard", href: "/dashboard", icon: LayoutDashboard },
       { name: "nav.bigScreen", href: "/big-screen", icon: Monitor },
+      { name: "nav.dcRoom3D", href: "/data-room", icon: Monitor },
+      { name: "nav.screenResource", href: "/screens/resource", icon: Gauge },
+      { name: "nav.screenCostCapacity", href: "/screens/cost-capacity", icon: DollarSign },
+      { name: "nav.screenServiceRisk", href: "/screens/service-risk", icon: Activity },
+      { name: "nav.screenCompliance", href: "/screens/compliance", icon: ShieldCheck },
     ],
   },
   {
@@ -132,8 +141,15 @@ export const navigationGroups: NavGroup[] = [
     icon: Building2,
     items: [
       { name: "nav.dcInfrastructure", href: "/dc-manage", icon: LayoutGrid },
-      { name: "nav.dcRoom3D", href: "/data-room", icon: Monitor },
+      // 2026-11-27：机房看板移至「看板」组（nav.home）；此处暂挂 CMDB 功能页 demo
+      // （资源工作台/拓扑画布/IPAM/影响分析/CI 详情/运维对象，cmdb-portal 模块）
       { name: "nav.cmdbTopology", href: "/cmdb-topology", icon: GitBranch },
+      { name: "nav.workbench", href: "/workbench", icon: LayoutDashboard },
+      { name: "nav.topoCanvas", href: "/topo-canvas", icon: Waypoints },
+      { name: "nav.ipamConsole", href: "/ipam", icon: Network },
+      { name: "nav.impactAnalysis", href: "/impact-analysis", icon: Zap },
+      { name: "nav.ciDetail", href: "/ci-detail", icon: Search },
+      { name: "nav.opsObjects", href: "/ops-objects", icon: ListChecks },
     ],
   },
   {
