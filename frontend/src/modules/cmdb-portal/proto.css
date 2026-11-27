@@ -108,10 +108,6 @@
 .cmdb-proto .kv .k{color:var(--l-sub)}
 .cmdb-proto .kv .v{font-variant-numeric:tabular-nums}
 .cmdb-proto .notice{font-size:11px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:9px 12px;margin-bottom:14px}
-.cmdb-proto .kpis{grid-template-columns:repeat(3,1fr)}
-.cmdb-proto .grid3{grid-template-columns:1fr}
-.cmdb-proto .mcards{grid-template-columns:repeat(2,1fr)}
-.cmdb-proto .split{grid-template-columns:1fr}
 @media(max-width:1200px){.cmdb-proto .kpis{grid-template-columns:repeat(3,1fr)}
 .cmdb-proto .grid3{grid-template-columns:1fr}
 .cmdb-proto .mcards{grid-template-columns:repeat(2,1fr)}
