@@ -27,6 +27,7 @@ import {
   upsertDatacenterDevice,
   syncDeviceSlot,
   findRoomIdByName,
+  retirePlatformCI,
 } from './cmdbSyncWriter';
 
 // ============================================================
@@ -37,12 +38,14 @@ export interface SyncResult {
   success: boolean;
   batchId: string;
   durationMs: number;
-  summary: Record<string, { pulled: number; created: number; updated: number; errors: number }>;
+  summary: Record<string, { pulled: number; created: number; updated: number; retired: number; errors: number }>;
   message: string;
 }
 
 interface ITopServer {
   name: string;
+  /** iTop 生命周期状态：production/stock/implementation/obsolete；obsolete 为已退役，不同步 */
+  status?: string;
   managementip?: string;
   svrbizip_name?: string;
   osfamily_name?: string;
@@ -68,6 +71,8 @@ interface ITopLocation {
 }
 interface ITopDatacenterDevice {
   name: string;
+  /** iTop 生命周期状态（obsolete 为已退役，不同步） */
+  status?: string;
   description?: string;
   managementip?: string;
   finalclass?: string;
@@ -150,6 +155,12 @@ async function syncAll(): Promise<SyncResult> {
 // ============================================================
 
 /**
+ * 参与「退役反向清理」的 CI 类型。
+ * Location / Rack 生命周期独立（机柜即使闲置也要保留布局），不能按 status 删除。
+ */
+const RETIRE_ENABLED_CI_TYPES = new Set(['Server', 'DatacenterDevice']);
+
+/**
  * 对单个 CI 类型执行：取数 → 分批 upsert → 记日志 → 更新 state
  *
  * 事务边界：按 200 条一批提交，「本批数据写入 + idMap 更新」在同一事务内，
@@ -162,7 +173,7 @@ async function syncCIs<TFields>(
   summary: SyncResult['summary'],
 ): Promise<void> {
   const { ciType } = strategy;
-  const stats = { pulled: 0, created: 0, updated: 0, errors: 0 };
+  const stats = { pulled: 0, created: 0, updated: 0, retired: 0, errors: 0 };
   const start = Date.now();
 
   const result = await itopClient.getObjects<TFields>(
@@ -241,6 +252,33 @@ async function syncCIs<TFields>(
         const itopId = String(obj.key);
 
         try {
+          // iTop 是 CI 生命周期的唯一事实源：obsolete（已退役）对象不再属于有效资产，
+          // 名字含 __DUP_ 的是 cipipe 治理时的退役副本。两者都不应出现在机房看板。
+          // 关键：这里同时做「反向清理」——若平台侧已同步过该对象（idMap 命中），
+          // 删除平台记录与机柜槽位，避免 iTop 侧标 obsolete 后平台仍残留幽灵设备。
+          const rawStatus = (fields as { status?: string }).status;
+          const rawName = String((fields as { name?: string }).name ?? '');
+          if (RETIRE_ENABLED_CI_TYPES.has(ciType) && (rawStatus === 'obsolete' || rawName.includes('__DUP_'))) {
+            stats.retired++;
+            const platformId = idMap[itopId];
+            if (platformId) {
+              const removed = retirePlatformCI(ciType, platformId);
+              delete idMap[itopId];
+              pendingLogs.push({
+                sync_batch_id: batchId, direction: 'pull', ci_type: ciType, action: 'retire',
+                itop_id: itopId, platform_id: platformId, platform_table: ciType === 'Server' ? 'servers' : 'devices',
+                success: true,
+                message: `iTop 已退役（status=${rawStatus ?? 'n/a'}），清理平台记录与 ${removed.slots} 个机柜槽位`,
+              });
+            } else {
+              pendingLogs.push({
+                sync_batch_id: batchId, direction: 'pull', ci_type: ciType, action: 'skip',
+                itop_id: itopId, success: true, message: `iTop 已退役（status=${rawStatus ?? 'n/a'}），未入平台`,
+              });
+            }
+            continue;
+          }
+
           const res = strategy.upsert(fields, { existingId: idMap[itopId], idMap });
           idMap[itopId] = res.platformId;
 
@@ -286,7 +324,7 @@ async function syncCIs<TFields>(
 
   summary[ciType] = stats;
   logger.info(
-    `📍 [CMDB-Sync] ${ciType}: pulled=${stats.pulled} created=${stats.created} updated=${stats.updated}`,
+    `📍 [CMDB-Sync] ${ciType}: pulled=${stats.pulled} created=${stats.created} updated=${stats.updated} retired=${stats.retired}`,
   );
 }
 
@@ -345,7 +383,7 @@ const datacenterDeviceStrategy: SyncStrategy<ITopDatacenterDevice> = {
   // （按名字占位挂柜产生双份槽位）。排除后仅剩真正的机房设备（NetworkDevice/PDU/UPS/StorageSystem...）
   oql: "SELECT DatacenterDevice WHERE finalclass != 'Server'",
   outputFields:
-    'name, description, managementip, finalclass, organization_name, serialnumber, rack_id, networkdevicetype_id_friendlyname, model_name, brand_name',
+    'name, description, managementip, finalclass, organization_name, serialnumber, rack_id, networkdevicetype_id_friendlyname, model_name, brand_name, status',
   upsert: (fields, { existingId }) => {
     const res = upsertDatacenterDevice(existingId, fields);
     // 挂柜关系：U 位优先从 description 台账标注「位置：Uxx」解析

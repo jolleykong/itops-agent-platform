@@ -234,6 +234,54 @@ export function upsertServer(
   };
 }
 
+/**
+ * 退役 CI 的反向清理：iTop 侧对象变为 obsolete / 名为 __DUP_ 副本时，
+ * 删除平台侧对应记录与机柜槽位，避免退役对象残留在机房看板。
+ *
+ * 只按 idMap 命中到的「本同步管线创建的记录」删除 —— 平台手工录入、带凭证、
+ * 有告警/线缆关联的设备不受影响（它们没有 idMap 映射，不会走到这里）。
+ */
+export function retirePlatformCI(
+  ciType: string,
+  platformId: string,
+): { removed: boolean; slots: number } {
+  let table: 'servers' | 'network_devices' | 'dc_pdus' | null = null;
+  if (ciType === 'Server') {
+    table = 'servers';
+    // 同步创建的服务器没有凭证 / zabbix_hostid；若被人工补过，保留记录仅摘槽位
+    const row = db.prepare('SELECT password, private_key, zabbix_hostid FROM servers WHERE id = ?').get(platformId) as
+      | { password?: string | null; private_key?: string | null; zabbix_hostid?: string | null }
+      | undefined;
+    if (row && !row.password && !row.private_key && !row.zabbix_hostid) {
+      db.prepare('DELETE FROM servers WHERE id = ?').run(platformId);
+    } else {
+      table = null;
+    }
+  } else if (ciType === 'DatacenterDevice') {
+    // 先判断在哪张表：network_devices 优先，其次 dc_pdus
+    const inNd = db.prepare('SELECT 1 FROM network_devices WHERE id = ?').get(platformId);
+    if (inNd) {
+      db.prepare('DELETE FROM network_devices WHERE id = ?').run(platformId);
+      table = 'network_devices';
+    } else {
+      const inPdu = db.prepare('SELECT 1 FROM dc_pdus WHERE id = ?').get(platformId);
+      if (inPdu) {
+        db.prepare('DELETE FROM dc_pdus WHERE id = ?').run(platformId);
+        table = 'dc_pdus';
+      }
+    }
+  }
+
+  // 摘除机柜槽位：device_id = 平台记录 id；rack 内映射随记录失效
+  const slotTypes = ciType === 'Server' ? ['server'] : ['network_device', 'pdu', 'ups', 'other'];
+  const placeholders = slotTypes.map(() => '?').join(',');
+  const slotRes = db.prepare(
+    `DELETE FROM dc_rack_slots WHERE device_id = ? AND device_type IN (${placeholders})`,
+  ).run(platformId, ...slotTypes);
+
+  return { removed: table !== null, slots: slotRes.changes };
+}
+
 // ============================================================
 // DatacenterDevice → network_devices / dc_pdus
 // ============================================================
