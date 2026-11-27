@@ -56,6 +56,7 @@ const ciClassLabel: Record<string, string> = {
   NetPort: '端口',
   Vlan: 'VLAN',
   IpAddr: 'IP 邻接',
+  NetPeer: 'CDP 邻接设备',
 };
 
 /** iTop status 枚举 → 状态点颜色 */

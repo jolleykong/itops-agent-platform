@@ -61,3 +61,52 @@ export function groupByVid(rows: NetobsRow[]): Map<string, NetobsRow[]> {
   }
   return m;
 }
+
+// ============================================================
+// CDP 网络链路层级（cipipe netlinks：设备级拓扑边 + BFS 分层）
+// ============================================================
+
+export interface NetlinkNode {
+  ip: string;
+  name: string;
+  layer: number | null;
+}
+
+export interface NetlinkEdge {
+  a: string;
+  b: string;
+  /** 两端端口明细（cipipe 侧已拼好 "src[port] -> peer[port]"） */
+  ports: string[];
+}
+
+export interface NetlinkUnconfirmed {
+  src: string;
+  port: string | null;
+  peer: string;
+  peer_port: string | null;
+  platform: string | null;
+}
+
+export interface NetlinkTopology {
+  nodes: NetlinkNode[];
+  edges: NetlinkEdge[];
+  unconfirmed: NetlinkUnconfirmed[];
+  /** ip → BFS 层级（核心种子=0；未连通=null） */
+  layer_of: Record<string, number | null>;
+}
+
+const EMPTY_TOPOLOGY: NetlinkTopology = { nodes: [], edges: [], unconfirmed: [], layer_of: {} };
+
+/** 拉取全网 CDP 拓扑（失败静默为空，不拖垮链路） */
+export async function fetchNetlinksTopology(): Promise<NetlinkTopology> {
+  const url = `${BASE_URL}/netlinks/topology`;
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const j = (await res.json()) as NetlinkTopology;
+    return j && Array.isArray(j.nodes) ? j : EMPTY_TOPOLOGY;
+  } catch (err) {
+    logger.warn(`cipipe netlinks topology fetch failed: ${(err as Error).message}`);
+    return EMPTY_TOPOLOGY;
+  }
+}
