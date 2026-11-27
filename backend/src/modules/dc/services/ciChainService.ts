@@ -86,6 +86,19 @@ const VM_FIELDS = 'name,status,osfamily_name,managementip,virtualhost_id_friendl
 /** 纯 IPv4 字面量名称：Zabbix 早期按 IP 建 CI 的遗留命名 */
 const PURE_IP_NAME = /^\d{1,3}(\.\d{1,3}){3}$/;
 
+/** 同步重复残渣命名（cipipe itop-dedup 同类产物，过期内容页可见可清理） */
+const RE_DUP_RESIDUE = /__DUP_(?:SERVER|VIRTUALMACHINE|HYPERVISOR|DBSERVER|NETWORKDEVICE|STORAGESYSTEM)_\d+$/;
+
+/**
+ * 链路展开通用残渣过滤（代码层，不能放 OQL —— OQL `!=` 会连 NULL 一起排除）：
+ * status 未设置（NULL）/production/active 正常；inactive/obsolete 为改名闭环淘汰的
+ * 旧命名或同步残渣（如 VR-SSAPP18__DUP_VIRTUALMACHINE_2031 仍挂着同 IP），不进链路。
+ */
+function isStaleCiStatus(status: string | null | undefined): boolean {
+  const s = (status ?? '').trim().toLowerCase();
+  return s === 'inactive' || s === 'obsolete';
+}
+
 interface ITopEntry {
   key: string | number;
   class: string;
@@ -383,11 +396,16 @@ export async function getCiChain(params: {
     const rows = await listByOQL(q.className, q.oql(name), q.fields);
     for (const r of rows) {
       const st = normalizeStatus(fieldStr(r.fields, 'status'));
-      // 残渣 DBServer（Zabbix 改名前旧命名，已标 inactive）不展示
+      const nm = fieldStr(r.fields, 'name') ?? String(r.key);
+      // 残渣过滤：DBServer 旧命名（Zabbix 改名前）与 __DUP 同步残渣（含 VM/
+      // Hypervisor 层，如 VR-SSAPP18__DUP_VIRTUALMACHINE_2031）不进链路
       if (r.class === 'DBServer' && isStaleDbServer(st)) continue;
+      if (r.class === 'VirtualMachine' || r.class === 'Hypervisor') {
+        if (isStaleCiStatus(st) || RE_DUP_RESIDUE.test(nm)) continue;
+      }
       children.push({
         class: r.class,
-        name: fieldStr(r.fields, 'name') ?? String(r.key),
+        name: nm,
         relation: q.relation,
         status: st,
         ip: fieldStr(r.fields, 'managementip'),
@@ -752,6 +770,10 @@ async function vmCounterparts(vmName: string, vmIp?: string): Promise<ITopEntry[
     for (const r of rows) {
       const n = fieldStr(r.fields, 'name');
       if (!n || n === vmName) continue;
+      // __DUP 同步残渣不作为对端（曾把 obsolete 的 VR-SSAPP18__DUP_VIRTUALMACHINE_2031
+      // 按 managementip 同址带进链路，展示成「操作系统」）
+      if (RE_DUP_RESIDUE.test(n)) continue;
+      if (isStaleCiStatus(fieldStr(r.fields, 'status'))) continue;
       // 同层不挂（同为 -VM 或同为非 -VM 的多台，各自由自身关联对方）
       if (/-VM$/i.test(n) === selfIsVmLayer) continue;
       if (!byName.has(n)) byName.set(n, r);
@@ -844,12 +866,13 @@ async function vmOsDbChildren(osName: string, ip?: string): Promise<CiChainNode[
     const same = await listByOQL(
       'VirtualMachine',
       `SELECT VirtualMachine WHERE managementip = '${esc(ip)}'`,
-      'name,managementip',
+      'name,managementip,status',
     );
     for (const r of same) {
       const n = fieldStr(r.fields, 'name');
-      // 别名只取 OS 层（非 -VM），-VM 是虚拟化层对象，不会承载 DBServer
-      if (n && !/-VM$/i.test(n)) names.add(n);
+      // 别名只取 OS 层（非 -VM）且非 __DUP 残渣/过期对象；-VM 是虚拟化层对象，不会承载 DBServer
+      if (n && !/-VM$/i.test(n) && !RE_DUP_RESIDUE.test(n)
+          && !isStaleCiStatus(fieldStr(r.fields, 'status'))) names.add(n);
     }
   }
 
