@@ -639,7 +639,9 @@ async function networkDeviceNamesByIps(ips: string[]): Promise<Map<string, strin
   for (const r of rows) {
     const ip = fieldStr(r.fields, 'managementip');
     const n = fieldStr(r.fields, 'name');
-    if (ip && n) m.set(ip, n);
+    // __DUP 同步残渣（如 10.240.22.254__DUP_NETWORKDEVICE_1299，与本体同 IP）
+    // 不作映射目标：映射失败时对端回退为 NetPeer（devid@ip），语义仍正确
+    if (ip && n && !RE_DUP_RESIDUE.test(n)) m.set(ip, n);
   }
   return m;
 }
