@@ -262,7 +262,7 @@ async function syncCIs<TFields>(
             stats.retired++;
             const platformId = idMap[itopId];
             if (platformId) {
-              const removed = retirePlatformCI(ciType, platformId);
+              const removed = retirePlatformCI(ciType, platformId, rawName);
               delete idMap[itopId];
               pendingLogs.push({
                 sync_batch_id: batchId, direction: 'pull', ci_type: ciType, action: 'retire',

@@ -244,6 +244,7 @@ export function upsertServer(
 export function retirePlatformCI(
   ciType: string,
   platformId: string,
+  ciName?: string,
 ): { removed: boolean; slots: number } {
   let table: 'servers' | 'network_devices' | 'dc_pdus' | null = null;
   if (ciType === 'Server') {
@@ -278,8 +279,17 @@ export function retirePlatformCI(
   const slotRes = db.prepare(
     `DELETE FROM dc_rack_slots WHERE device_id = ? AND device_type IN (${placeholders})`,
   ).run(platformId, ...slotTypes);
+  let slotCount = slotRes.changes;
 
-  return { removed: table !== null, slots: slotRes.changes };
+  // 无 IP 设备（存储/命名交换机）以「设备名」作占位 device_id（device_type='other'），
+  // 不落在任何设备表里，上面按 id 删除匹配不到 —— 必须再按 CI 名清一次。
+  if (ciName) {
+    slotCount += db.prepare(
+      "DELETE FROM dc_rack_slots WHERE device_id = ? AND device_type = 'other'",
+    ).run(ciName).changes;
+  }
+
+  return { removed: table !== null, slots: slotCount };
 }
 
 // ============================================================
