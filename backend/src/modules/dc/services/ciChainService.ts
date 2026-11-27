@@ -29,6 +29,7 @@ import {
   groupByIfname,
   groupByVid,
   type NetlinkTopology,
+  type NetobsRow,
 } from './cipipeAdjacencyService';
 
 // ============================================================
@@ -384,7 +385,9 @@ export async function getCiChain(params: {
     }
     case 'VirtualMachine': {
       const hv = fieldStr(f, 'virtualhost_id_friendlyname');
-      if (hv) parents.push({ class: 'Hypervisor', name: hv, relation: '虚拟化宿主' });
+      // 占位宿主（未关联：ZBX-VM-Unassigned-Host）不展示——网络落地视角下
+      // parents 是唯一的宿主导航入口，假宿主会把用户带进死胡同
+      if (hv && hv !== 'ZBX-VM-Unassigned-Host') parents.push({ class: 'Hypervisor', name: hv, relation: '虚拟化宿主' });
       break;
     }
     case 'DBServer': {
@@ -512,6 +515,33 @@ export async function getCiChain(params: {
       } catch (err) {
         logger.warn(`ciChain vmOsDbChildren failed for ${name}: ${(err as Error).message}`);
       }
+    } else {
+      // 虚拟化层（-VM）补 DB 反查（2026-11-28 网络落地断链修复）：
+      // 多数 VM 在 iTop 只有 -VM 对象、OS 层 CI 不存在（如 VR-SSAPP18），
+      // 但 DBServer.system_id_friendlyname 存的是友好名文本，可直接挂基础名
+      // 或被 gv$instance（Zabbix）按主机名派生命中——不要求 OS 层 CI 真实存在。
+      try {
+        const base = name.replace(/-VM$/i, '');
+        const seen = new Set(children.map(c => `${c.class}:${c.name}`));
+        for (const c of await vmOsDbChildren(base, selfIp)) {
+          const k = `${c.class}:${c.name}`;
+          if (!seen.has(k)) { seen.add(k); children.push(c); }
+        }
+      } catch (err) {
+        logger.warn(`ciChain vmOsDbChildren(base) failed for ${name}: ${(err as Error).message}`);
+      }
+    }
+  }
+
+  // 机器层节点（网络落地终点）children 为空时明示数据缺口：展开能力已尽力，
+  // 剩余空白来自 CMDB 关联未建立，治理建立后自动入链（2026-11-28）
+  let emptyMachineHint: string | undefined;
+  if (children.length === 0) {
+    if (self.class === 'Server') {
+      emptyMachineHint = '未关联虚拟化宿主/虚拟机/数据库实例/OS 层 CI —— 数据缺口（CMDB 建立关联后自动入链）';
+    } else if (self.class === 'VirtualMachine' && /-VM$/i.test(name)
+               && parents.some(p => p.class === 'Hypervisor')) {
+      emptyMachineHint = '无 OS 层 CI 与数据库实例关联（OS 层 CI 缺失，-VM 对象即代表本机）；可从上级虚拟化宿主继续展开';
     }
   }
 
@@ -520,6 +550,7 @@ export async function getCiChain(params: {
     parents,
     children,
     source: 'itop',
+    degraded: emptyMachineHint,
   };
 }
 

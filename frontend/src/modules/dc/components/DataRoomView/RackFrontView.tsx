@@ -212,6 +212,11 @@ export default function RackFrontView({ rack, slots, onClose, scheme }: Props) {
   /** 机柜内设备的 U 位标记，如 U10 或 U10-U11 */
   const uPos = (s: SlotInfo) => `U${s.startU}${s.endU > s.startU ? `-U${s.endU}` : ''}`;
 
+  /** 跳回左侧已有列（上级链接点击）：截断其后所有列并清除该列激活态（= 收起该分支） */
+  const jumpBack = (target: number) => {
+    setLevels(prev => prev.slice(0, target + 1).map((lv, i) => (i === target ? { ...lv, activeKey: undefined } : lv)));
+  };
+
   /** 层级链（根机柜 → 本列自身，含端点），供「复制层级」与层链展示使用。
    *  机柜内设备（第 1 级）在后缀上标注所在 U 位：rack > 设备(U10-U11) > 下层 CI */
   const chainFor = (idx: number): string[] => {
@@ -364,7 +369,9 @@ export default function RackFrontView({ rack, slots, onClose, scheme }: Props) {
             idx={0}
             selectedInfo={selected}
             hierarchy={chainFor(0)}
+            levels={levels}
             onOpen={openNode}
+            onBack={jumpBack}
             onCloseCol={() => setSelected(null)}
             scheme={scheme}
           />
@@ -374,7 +381,9 @@ export default function RackFrontView({ rack, slots, onClose, scheme }: Props) {
               lv={lv}
               idx={i + 1}
               hierarchy={chainFor(i + 1)}
+              levels={levels}
               onOpen={openNode}
+              onBack={jumpBack}
               onCloseCol={() => setLevels(prev => prev.slice(0, i + 1))}
               scheme={scheme}
             />
@@ -385,10 +394,11 @@ export default function RackFrontView({ rack, slots, onClose, scheme }: Props) {
   );
 }
 
-/** 单个级联列：本列自身信息卡（显著高亮当前层级）+ 子层级行；点击行向右展开下一列。
- *  父层级不再在列内渲染——它就是左侧的列。 */
+/** 单个级联列：本列自身信息卡（显著高亮当前层级）+ 上级专属区 + 子层级行；点击行向右展开下一列。
+ *  2026-11-28 结构升级：每列分三段 —— ①自身信息卡（含元数据/详情占位）②上级链接区
+ *  （网络落地视角的上级 ≠ 左侧列，如宿主/机柜/CDP 上联，是新的导航分支）③下级行。 */
 function CiColumn({
-  lv, idx, selectedInfo, hierarchy, onOpen, onCloseCol, scheme,
+  lv, idx, selectedInfo, hierarchy, levels, onOpen, onBack, onCloseCol, scheme,
 }: {
   lv: CascadeLevel;
   idx: number;
@@ -396,7 +406,11 @@ function CiColumn({
   selectedInfo?: SlotInfo;
   /** 根层级 → 本列自身的名称链（复制层级用） */
   hierarchy: string[];
+  /** 全部级联列状态（上级链接判断目标列是否已存在） */
+  levels: CascadeLevel[];
   onOpen: (levelIdx: number, node: CiChainNode) => void;
+  /** 跳回左侧已有列：截断其后所有列 */
+  onBack: (target: number) => void;
   onCloseCol: () => void;
   scheme: DcScheme;
 }) {
@@ -472,6 +486,12 @@ function CiColumn({
               </button>
             </div>
             <p className="text-[11px] font-semibold mt-1 leading-tight break-all" style={{ color: scheme.text }}>{selfName}</p>
+            {/* 元数据行（深层列）：IP / 品牌·型号·OS·SN —— resp.self 此前未展示的字段 */}
+            {idx > 0 && (resp?.self?.ip || resp?.self?.extra) && (
+              <p className="text-[9px] mt-0.5 leading-tight break-all" style={{ color: scheme.modalTextMuted }}>
+                {[resp?.self?.ip, resp?.self?.extra].filter(Boolean).join(' · ')}
+              </p>
+            )}
             <div className="flex flex-wrap items-center gap-x-2 mt-0.5 text-[9px]" style={{ color: scheme.modalTextMuted }}>
               {idx === 0 && selectedInfo && (
                 <>
@@ -482,6 +502,14 @@ function CiColumn({
                   {selectedInfo.memUsage != null && <span>内存 {selectedInfo.memUsage}%</span>}
                 </>
               )}
+              <button
+                onClick={() => window.open('/ci-detail', '_blank')}
+                className="text-[9px] px-1.5 py-0.5 rounded transition-colors"
+                style={{ border: `1px dashed rgba(${scheme.accentRgb},0.35)`, color: scheme.accent, background: 'transparent' }}
+                title="对象详情页（占位入口，详情页接入真实数据源后自动生效）"
+              >
+                详情 ↗
+              </button>
               <button
                 onClick={copyChain}
                 className="ml-auto text-[9px] px-1.5 py-0.5 rounded transition-colors"
@@ -498,11 +526,41 @@ function CiColumn({
             )}
           </div>
         )}
+        {/* ① 上级专属区：网络落地视角的上级（宿主/机柜/CDP 上联）不在左侧路径里，
+            是新的导航分支。点击：目标列已存在 → 跳回收起右侧；否则向右展开。 */}
+        {resp && resp.parents.length > 0 && (
+          <div className="mx-1.5 mt-1 px-1.5 py-1 rounded" style={{ background: scheme.freeSegBg }}>
+            <p className="text-[8px] font-semibold tracking-wide" style={{ color: scheme.modalTextMuted }}>▲ 上级（{resp.parents.length}）</p>
+            {resp.parents.map((p, i) => {
+              const k = `${p.class}:${p.name}`;
+              const backIdx = levels.findIndex(l => l.key === k || l.key === `L0:${k}`);
+              return (
+                <div
+                  key={`p-${i}`}
+                  onClick={() => (backIdx >= 0 ? onBack(backIdx) : onOpen(idx, p))}
+                  className="flex items-center gap-1.5 px-1 py-1 rounded cursor-pointer transition-colors"
+                  title={`${p.relation} · ${p.name}（点击${backIdx >= 0 ? '跳回该层' : '向右展开'}）`}
+                  onMouseEnter={e => { e.currentTarget.style.background = `rgba(${scheme.accentRgb},0.1)`; }}
+                  onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+                >
+                  <span className="text-[8px] px-1 py-0.5 rounded shrink-0" style={{ background: `rgba(${scheme.accentRgb},0.08)`, border: `1px solid rgba(${scheme.accentRgb},0.2)`, color: scheme.accent }}>
+                    {ciClassLabel[p.class] || p.class}
+                  </span>
+                  <span className="text-[10px] truncate flex-1 min-w-0" style={{ color: scheme.text }}>{p.name}</span>
+                  <span className="text-[8px] shrink-0" style={{ color: scheme.modalTextMuted }}>{backIdx >= 0 ? '↩' : '▸'}</span>
+                </div>
+              );
+            })}
+          </div>
+        )}
         {lv.loading && <p className="text-[10px] px-3 py-2" style={{ color: scheme.modalTextMuted }}>查询中…</p>}
         {lv.error && <p className="text-[10px] px-3 py-2" style={{ color: scheme.danger }}>✕ {lv.error}</p>}
         {resp && (
           <>
             {resp.degraded && <p className="text-[9px] px-3 py-1" style={{ color: scheme.warn }}>⚠ {resp.degraded}</p>}
+            {resp.children.length > 0 && (
+              <p className="text-[8px] font-semibold tracking-wide px-3 pt-1.5" style={{ color: scheme.modalTextMuted }}>▼ 下级（{resp.children.length}）</p>
+            )}
             {visibleChildren.map((c, i) => {
               const key = `${c.class}:${c.name}`;
               return (
