@@ -70,12 +70,18 @@ export const PARENT_RULES: readonly ParentRule[] = [
       relation: '所在机柜',
     }),
   ),
-  // ── 存储轴：设备 → 存储系统（CMDB 未采集挂载关系，规则先占位）──
-  // 待采集链建成后启用：Volume 侧字段为 server_id / virtualdevice_id
-  // {
-  //   axis: 'storage', fromClass: 'StorageVolume', idField: 'server_id',
-  //   nameField: 'server_id_friendlyname', toClasses: ['Server'], relation: '所属存储卷',
-  // },
+  // ── 存储轴（2026-11-28）：卷 → 所属存储系统 ──
+  // 由 cipipe `storage push` 从 Zabbix 采集的 LUN/卷写入 LogicalVolume。
+  // 注意：**卷 → 主机**的挂载关系（lnkServerToVolume）仍未采集，
+  // 所以存储轴只能到「存储系统 ← 卷」，到不了主机；缺口由 aiops gaps 显式报出。
+  {
+    axis: 'storage',
+    fromClass: 'LogicalVolume',
+    idField: 'storagesystem_id',
+    nameField: 'storagesystem_id_friendlyname',
+    toClasses: ['StorageSystem'],
+    relation: '所属存储系统',
+  },
 ];
 
 /** 取某类的全部上级规则 */
@@ -98,6 +104,7 @@ const EXTRA_FIELDS: Record<string, string[]> = {
   NetworkDevice: ['managementip', 'brand_name', 'model_name'],
   StorageSystem: ['brand_name', 'model_name'],
   Rack: [],
+  LogicalVolume: ['lun_id', 'size'],
   PDU: [],
   UPS: [],
 };

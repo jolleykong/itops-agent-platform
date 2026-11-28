@@ -151,6 +151,8 @@ const GRAPH_CLASSES = [
   'Rack',
   'PDU',
   'UPS',
+  // 存储卷：由 cipipe storage 从 Zabbix 卷清单写入，形成「存储系统 ← 卷」
+  'LogicalVolume',
 ] as const;
 
 interface RawCi {
@@ -616,7 +618,12 @@ export async function buildRelationGraph(includeDup = false, force = false): Pro
   // ── 数据缺口 ──
   const gaps: string[] = [];
   if (byAxis.storage === 0) {
-    gaps.push(`${AXIS_META.storage.label}：CMDB 未采集 Server/VM ↔ 存储卷挂载关系（logicalvolume / lnkservertovolume 为空），全部对象无存储轴`);
+    gaps.push(`${AXIS_META.storage.label}：CMDB 无存储卷数据（LogicalVolume 为空）`);
+  } else {
+    gaps.push(
+      `${AXIS_META.storage.label}：已入 CMDB 存储卷 ${byClass.LogicalVolume ?? 0} 个（存储系统 ← 卷），` +
+      '但**卷↔主机挂载关系未采集**（lnkServerToVolume 为空），因此存储轴无法连到服务器/虚机',
+    );
   }
   if (adjacency.length === 0) {
     gaps.push('网络轴：CMDB 无网络邻接（lnkConnectableCIToNetworkDevice 为空）—— 需在 cipipe 执行 netadj push / netadj cdp');
