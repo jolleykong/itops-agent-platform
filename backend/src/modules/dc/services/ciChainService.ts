@@ -24,10 +24,13 @@ import { logger } from '../../../utils/logger';
 import { itopClient } from '../../cmdb-sync/services/itopClient';
 import { findDbHostsByOsHost, findDbHostsByDbServerName, osNameMatchesHost } from './zabbixDbMapService';
 import {
+  fetchNetlinksPath,
   fetchNetlinksTopology,
   fetchNetobsByHost,
+  fetchNetobsByIp,
   groupByIfname,
   groupByVid,
+  type NetlinkPathHop,
   type NetlinkTopology,
   type NetobsRow,
 } from './cipipeAdjacencyService';
@@ -62,6 +65,29 @@ export interface CiChain {
   source: 'itop' | 'local' | 'none';
   /** 降级/未命中说明（前端展示给用户） */
   degraded?: string;
+  /** 上级三轴（网络→出口 / 存储→存储服务器 / 宿主→物理机）；仅 iTop 实时链路返回 */
+  parent_dims?: CiChainParentDims;
+}
+
+/** 单条关系轴：chain 自近及远排列，root = 该轴的根源节点；missing = 数据缺口说明 */
+export interface CiChainParentDim {
+  chain: CiChainNode[];
+  root?: CiChainNode;
+  missing?: string;
+}
+
+/**
+ * 上级三轴（2026-11-28 用户定则）：设备通常有三层 CI 关系，各自向上溯源——
+ *   ① network：网络上下级，向上展开到出口（CDP 上联链）
+ *   ② storage：存储上下级，向上展开到存储服务器（CMDB 挂载关系未采集，暂占位）
+ *   ③ host：宿主上下级，向上展开到物理机（virtualhost / server_id 链）
+ * 三轴之外的上联同层/机柜等归入 other 保留导航。
+ */
+export interface CiChainParentDims {
+  network: CiChainParentDim;
+  storage: CiChainParentDim;
+  host: CiChainParentDim;
+  other: CiChainNode[];
 }
 
 // ============================================================
@@ -149,6 +175,116 @@ async function resolveConcreteDeviceClass(name: string): Promise<string | null> 
   if (!res.success || !res.data) return null;
   const first = Object.values(res.data.objects)[0];
   return first?.class ?? null;
+}
+
+// ============================================================
+// 上级三轴构建（2026-11-28 用户定则）：
+//   ① 网络轴：本机 → 上联链 → 核心/出口（CDP netlinks path_to_core）
+//   ② 存储轴：本机 → 存储卷 → 存储服务器（lnkservertovolume 全空=数据未采集，先占位）
+//   ③ 宿主轴：虚拟机 → 虚拟化宿主 → 物理机（virtualhost / server_id 链）
+// 机器层的网络轴 = 观测到本机 IP 的交换机 + 该交换机的 CDP 上联链根源。
+// ============================================================
+
+const MISSING_STORAGE = '存储挂载关系未采集（Server↔存储卷关联数据为空，CMDB 治理入库后自动接入）——占位';
+
+/** CDP 上联链 hops → 轴链节点（hops[0]=本机；末个 layer=0 的为核心/出口根源） */
+function hopsToChain(hops: { device: string; name: string | null; ports?: string[]; layer: number | null }[], fromIdx: number): CiChainNode[] {
+  return hops.slice(fromIdx).map((h, i) => ({
+    class: 'NetworkDevice',
+    name: h.name || h.device,
+    relation: h.layer === 0 ? '核心/出口层' : `第 ${i + 1} 跳上联 · L${h.layer ?? '?'}`,
+    ip: h.device,
+    extra: h.ports?.length ? h.ports.join(' · ') : undefined,
+  }));
+}
+
+/** 网络轴：网络设备自身——按管理 IP 走 CDP 上联链到核心/出口。 */
+async function networkDimForDevice(ip: string | undefined): Promise<CiChainParentDim> {
+  if (!ip) return { chain: [], missing: '无管理 IP 字段，无法定位上联链' };
+  const hops = await fetchNetlinksPath(ip);
+  // 自身已是核心/出口层（BFS layer 0）：网络轴到此为止，自身即根源
+  if (hops[0]?.layer === 0) return { chain: [], missing: '自身为核心/出口层 —— 即网络轴的根源' };
+  const chain = hopsToChain(hops, 1);
+  if (chain.length === 0) return { chain: [], missing: 'CDP 上联链未采集（netlinks 拓扑未覆盖该设备）' };
+  return { chain, root: chain[chain.length - 1] };
+}
+
+/** 网络轴：机器（Server/VM/Hypervisor）= 观测到本机 IP 的交换机 + 其上联链根源。 */
+async function networkDimForMachine(ip: string | undefined): Promise<CiChainParentDim> {
+  const rows = ip ? await fetchNetobsByIp(ip) : [];
+  const switches = [...new Set(rows.map(r => r.source_host))];
+  if (switches.length === 0) {
+    return { chain: [], missing: 'ARP 网络观测尚未覆盖本机管理 IP —— 上联链待采集' };
+  }
+  const chain: CiChainNode[] = switches.map(s => ({
+    class: 'NetworkDevice',
+    name: s,
+    relation: switches.length > 1 ? `ARP 观测交换机（共 ${switches.length} 台）` : 'ARP 观测交换机',
+    ip: s,
+  }));
+  // 逐台取观测交换机的 CDP 上联链：本身已是核心/出口（layer 0）的那台即根源；
+  // 否则沿第一台的上联延伸到核心/出口（根源=链尾）。
+  const paths = new Map<string, NetlinkPathHop[]>();
+  for (const s of switches) paths.set(s, await fetchNetlinksPath(s));
+  const coreSwitch = switches.find(s => paths.get(s)?.[0]?.layer === 0);
+  if (coreSwitch) {
+    return { chain, root: chain.find(c => c.ip === coreSwitch) };
+  }
+  chain.push(...hopsToChain(paths.get(switches[0]) ?? [], 1));
+  return { chain, root: chain[chain.length - 1] };
+}
+
+/** 宿主轴：VM→宿主→物理机 / Hypervisor→物理机 / Server=根源 / DBServer=承载链。 */
+async function hostDim(selfClass: string, f: Record<string, unknown>, name: string): Promise<CiChainParentDim> {
+  if (selfClass === 'VirtualMachine') {
+    const hv = fieldStr(f, 'virtualhost_id_friendlyname');
+    if (!hv || hv === 'ZBX-VM-Unassigned-Host') {
+      return { chain: [], missing: '未关联虚拟化宿主（virtualhost_id 为空/占位）—— CMDB 建立关联后自动入链' };
+    }
+    const chain: CiChainNode[] = [{ class: 'Hypervisor', name: hv, relation: '虚拟化宿主' }];
+    // 宿主轴根源：宿主所挂的物理机（Hypervisor.server_id）
+    const hvRows = await listByOQL('Hypervisor', `SELECT Hypervisor WHERE name = '${esc(hv)}'`, 'name,server_id_friendlyname');
+    const hostName = hvRows.length ? fieldStr(hvRows[0].fields, 'server_id_friendlyname') : undefined;
+    if (hostName && hostName !== 'ZBX-VM-Unassigned-Host') {
+      chain.push({ class: 'Server', name: hostName, relation: '物理服务器（宿主轴根源）' });
+    }
+    return { chain, root: chain[chain.length - 1] };
+  }
+  if (selfClass === 'Hypervisor') {
+    const host = fieldStr(f, 'server_id_friendlyname');
+    if (!host) return { chain: [], missing: '未关联物理服务器（server_id 为空）—— CMDB 治理后自动入链' };
+    const chain: CiChainNode[] = [{ class: 'Server', name: host, relation: '物理服务器（宿主轴根源）' }];
+    return { chain, root: chain[0] };
+  }
+  if (selfClass === 'Server') {
+    return { chain: [], missing: '自身为物理机 —— 即宿主轴的根源' };
+  }
+  if (selfClass === 'DBServer') {
+    // DB 实例由 OS 层/物理机承载（system_id + gv$instance 派生）；承载硬件 Server 即根源
+    const chain: CiChainNode[] = [];
+    let root: CiChainNode | undefined;
+    const host = fieldStr(f, 'system_id_friendlyname');
+    if (host && host !== 'ZBX-DB-Host-Unassigned') chain.push({ class: 'FunctionalCI', name: host, relation: '承载对象' });
+    try {
+      for (const p of await dbServerOsParents(name)) {
+        chain.push(p);
+        if (p.class === 'Server') root = p;
+      }
+    } catch (err) {
+      logger.warn(`ciChain hostDim dbServerOsParents failed for ${name}: ${(err as Error).message}`);
+    }
+    return chain.length ? { chain, root } : { chain: [], missing: '未关联承载对象（system_id 为空/占位）' };
+  }
+  if (selfClass === 'StorageSystem') {
+    return { chain: [], missing: '存储系统无宿主关系' };
+  }
+  return { chain: [], missing: '物理设备无宿主关系' };
+}
+
+/** 存储轴：数据未采集，一律占位（StorageSystem 自身即根源）。 */
+function storageDim(selfClass: string): CiChainParentDim {
+  if (selfClass === 'StorageSystem') return { chain: [], missing: '自身为存储系统 —— 即存储轴的根源' };
+  return { chain: [], missing: MISSING_STORAGE };
 }
 
 // ============================================================
@@ -545,12 +681,44 @@ export async function getCiChain(params: {
     }
   }
 
+  // 上级三轴（2026-11-28 用户定则）：网络→出口 / 存储→存储服务器 / 宿主→物理机。
+  // 单轴失败不拖垮整层；三轴覆盖不到的 parents（CDP 互联/机柜）归入 other 保留导航。
+  let parent_dims: CiChainParentDims | undefined;
+  try {
+    const [network, host] = await Promise.all([
+      self.class === 'NetworkDevice'
+        ? networkDimForDevice(selfIp)
+        : networkDimForMachine(selfIp),
+      hostDim(self.class, f, name),
+    ]);
+    const rack = parents.filter(p => p.class === 'Rack');
+    const coveredNames = new Set<string>();
+    const coveredIps = new Set<string>();
+    for (const n of [...network.chain, ...host.chain, ...rack]) {
+      coveredNames.add(`${n.class}:${n.name}`);
+      if (n.ip) coveredIps.add(n.ip);
+    }
+    const other: CiChainNode[] = [];
+    for (const p of parents) {
+      if (coveredNames.has(`${p.class}:${p.name}`)) continue;
+      // CDP 上联一跳已被网络轴完整链覆盖（名字是 iTop 名 vs CDP 名，按 IP 去重）
+      if (p.ip && coveredIps.has(p.ip)) continue;
+      if (/上联/.test(p.relation) && p.class === 'NetworkDevice') continue;
+      coveredNames.add(`${p.class}:${p.name}`);
+      other.push(p);
+    }
+    parent_dims = { network, storage: storageDim(self.class), host, other };
+  } catch (err) {
+    logger.warn(`ciChain parent_dims failed for ${name}: ${(err as Error).message}`);
+  }
+
   return {
     self: { class: self.class, name: fieldStr(f, 'name') ?? name, status: normalizeStatus(fieldStr(f, 'status')), ip: selfIp, extra: selfExtra },
     parents,
     children,
     source: 'itop',
     degraded: emptyMachineHint,
+    parent_dims,
   };
 }
 

@@ -20,6 +20,23 @@ interface CiChainResp {
   children: CiChainNode[];
   source: 'itop' | 'local' | 'none';
   degraded?: string;
+  parent_dims?: CiChainParentDims;
+}
+
+/** 单条关系轴：chain 自近及远；root = 该轴根源；missing = 数据缺口说明 */
+interface CiChainParentDim {
+  chain: CiChainNode[];
+  root?: CiChainNode;
+  missing?: string;
+}
+
+/** 上级三轴（2026-11-28 用户定则）：网络→出口 / 存储→存储服务器 / 宿主→物理机 */
+interface CiChainParentDims {
+  network: CiChainParentDim;
+  storage: CiChainParentDim;
+  host: CiChainParentDim;
+  /** 三轴之外的其余上级（机柜 / CDP 互联等） */
+  other: CiChainNode[];
 }
 
 /**
@@ -526,31 +543,75 @@ function CiColumn({
             )}
           </div>
         )}
-        {/* ① 上级专属区：网络落地视角的上级（宿主/机柜/CDP 上联）不在左侧路径里，
-            是新的导航分支。点击：目标列已存在 → 跳回收起右侧；否则向右展开。 */}
-        {resp && resp.parents.length > 0 && (
+        {/* ① 上级专属区（三轴分组，2026-11-28 用户定则）：设备的三层 CI 关系
+            各自向上溯源——🌐网络链路→出口 / 💾存储归属→存储服务器（暂占位）/
+            🖥宿主归属→物理机；每轴展示自己的根源。点击：目标列已存在 → 跳回
+            收起右侧；否则向右展开。后端未带 parent_dims（虚拟类）→ 平铺回退。 */}
+        {resp && resp.parent_dims && (() => {
+          const dims = resp.parent_dims;
+          const groups: { key: string; title: string; dim?: CiChainParentDim; nodes?: CiChainNode[] }[] = [
+            { key: 'network', title: '🌐 网络链路（→ 出口）', dim: dims.network },
+            { key: 'storage', title: '💾 存储归属（→ 存储服务器）', dim: dims.storage },
+            { key: 'host', title: '🖥 宿主归属（→ 物理机）', dim: dims.host },
+            ...(dims.other.length ? [{ key: 'other', title: '📍 位置与其他', nodes: dims.other }] : []),
+          ];
+          return (
+            <div className="mx-1.5 mt-1 px-1.5 py-1 rounded" style={{ background: scheme.freeSegBg }}>
+              <p className="text-[8px] font-semibold tracking-wide" style={{ color: scheme.modalTextMuted }}>▲ 上级</p>
+              {groups.map(g => {
+                const chain = g.dim?.chain ?? [];
+                return (
+                  <div key={g.key} className="mt-0.5">
+                    <p className="text-[9px] font-medium truncate" style={{ color: scheme.accent }}>{g.title}</p>
+                    {chain.map((n, i) => {
+                      const isRoot = !!(g.dim?.root && g.dim.root.class === n.class && g.dim.root.name === n.name);
+                      return (
+                        <ParentLinkRow
+                          key={`pd-${g.key}-${i}`}
+                          node={n}
+                          isRoot={isRoot}
+                          levels={levels}
+                          idx={idx}
+                          onOpen={onOpen}
+                          onBack={onBack}
+                          scheme={scheme}
+                        />
+                      );
+                    })}
+                    {g.dim?.missing && (
+                      <p className="text-[9px] px-1 py-0.5 italic leading-tight" style={{ color: scheme.modalTextMuted }}>{g.dim.missing}</p>
+                    )}
+                    {g.nodes?.map((n, i) => (
+                      <ParentLinkRow
+                        key={`po-${i}`}
+                        node={n}
+                        levels={levels}
+                        idx={idx}
+                        onOpen={onOpen}
+                        onBack={onBack}
+                        scheme={scheme}
+                      />
+                    ))}
+                  </div>
+                );
+              })}
+            </div>
+          );
+        })()}
+        {resp && !resp.parent_dims && resp.parents.length > 0 && (
           <div className="mx-1.5 mt-1 px-1.5 py-1 rounded" style={{ background: scheme.freeSegBg }}>
             <p className="text-[8px] font-semibold tracking-wide" style={{ color: scheme.modalTextMuted }}>▲ 上级（{resp.parents.length}）</p>
-            {resp.parents.map((p, i) => {
-              const k = `${p.class}:${p.name}`;
-              const backIdx = levels.findIndex(l => l.key === k || l.key === `L0:${k}`);
-              return (
-                <div
-                  key={`p-${i}`}
-                  onClick={() => (backIdx >= 0 ? onBack(backIdx) : onOpen(idx, p))}
-                  className="flex items-center gap-1.5 px-1 py-1 rounded cursor-pointer transition-colors"
-                  title={`${p.relation} · ${p.name}（点击${backIdx >= 0 ? '跳回该层' : '向右展开'}）`}
-                  onMouseEnter={e => { e.currentTarget.style.background = `rgba(${scheme.accentRgb},0.1)`; }}
-                  onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
-                >
-                  <span className="text-[8px] px-1 py-0.5 rounded shrink-0" style={{ background: `rgba(${scheme.accentRgb},0.08)`, border: `1px solid rgba(${scheme.accentRgb},0.2)`, color: scheme.accent }}>
-                    {ciClassLabel[p.class] || p.class}
-                  </span>
-                  <span className="text-[10px] truncate flex-1 min-w-0" style={{ color: scheme.text }}>{p.name}</span>
-                  <span className="text-[8px] shrink-0" style={{ color: scheme.modalTextMuted }}>{backIdx >= 0 ? '↩' : '▸'}</span>
-                </div>
-              );
-            })}
+            {resp.parents.map((p, i) => (
+              <ParentLinkRow
+                key={`p-${i}`}
+                node={p}
+                levels={levels}
+                idx={idx}
+                onOpen={onOpen}
+                onBack={onBack}
+                scheme={scheme}
+              />
+            ))}
           </div>
         )}
         {lv.loading && <p className="text-[10px] px-3 py-2" style={{ color: scheme.modalTextMuted }}>查询中…</p>}
@@ -579,6 +640,42 @@ function CiColumn({
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+/** 上级链接行：目标列已存在 → 跳回收起右侧；否则向右展开。isRoot 时标注「根源」。 */
+function ParentLinkRow({
+  node, isRoot, levels, idx, onOpen, onBack, scheme,
+}: {
+  node: CiChainNode;
+  isRoot?: boolean;
+  levels: CascadeLevel[];
+  idx: number;
+  onOpen: (levelIdx: number, node: CiChainNode) => void;
+  onBack: (target: number) => void;
+  scheme: DcScheme;
+}) {
+  const k = `${node.class}:${node.name}`;
+  const backIdx = levels.findIndex(l => l.key === k || l.key === `L0:${k}`);
+  return (
+    <div
+      onClick={() => (backIdx >= 0 ? onBack(backIdx) : onOpen(idx, node))}
+      className="flex items-center gap-1.5 px-1 py-1 rounded cursor-pointer transition-colors"
+      title={`${node.relation} · ${node.name}（点击${backIdx >= 0 ? '跳回该层' : '向右展开'}）`}
+      onMouseEnter={e => { e.currentTarget.style.background = `rgba(${scheme.accentRgb},0.1)`; }}
+      onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+    >
+      <span className="text-[8px] px-1 py-0.5 rounded shrink-0" style={{ background: `rgba(${scheme.accentRgb},0.08)`, border: `1px solid rgba(${scheme.accentRgb},0.2)`, color: scheme.accent }}>
+        {ciClassLabel[node.class] || node.class}
+      </span>
+      <span className="text-[10px] truncate flex-1 min-w-0" style={{ color: scheme.text }}>{node.name}</span>
+      {isRoot && (
+        <span className="text-[8px] px-1 py-0.5 rounded shrink-0" style={{ background: `rgba(${scheme.accentRgb},0.18)`, border: `1px solid rgba(${scheme.accentRgb},0.4)`, color: scheme.accent }} title="该关系轴向上溯源的根源">
+          根源
+        </span>
+      )}
+      <span className="text-[8px] shrink-0" style={{ color: scheme.modalTextMuted }}>{backIdx >= 0 ? '↩' : '▸'}</span>
     </div>
   );
 }

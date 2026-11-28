@@ -110,3 +110,44 @@ export async function fetchNetlinksTopology(): Promise<NetlinkTopology> {
     return EMPTY_TOPOLOGY;
   }
 }
+
+// ============================================================
+// 上级三轴取数（2026-11-28 用户定则：网络→出口 / 存储→存储服务器 / 宿主→物理机）
+// ============================================================
+
+/** 拉取观测到某 IP 的全部观测行（反查观测交换机；失败静默为空） */
+export async function fetchNetobsByIp(ip: string): Promise<NetobsRow[]> {
+  const url = `${BASE_URL}/netobs/observations?ip=${encodeURIComponent(ip)}&limit=2000`;
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const j = (await res.json()) as { ok?: boolean; items?: NetobsRow[] };
+    return Array.isArray(j.items) ? j.items : [];
+  } catch (err) {
+    logger.warn(`cipipe netobs fetch by ip failed for ${ip}: ${(err as Error).message}`);
+    return [];
+  }
+}
+
+export interface NetlinkPathHop {
+  device: string;
+  name: string | null;
+  upstream: string | null;
+  upstream_name: string | null;
+  ports: string[];
+  layer: number | null;
+}
+
+/** 某设备 IP 的上联链（本机 → … → 核心/出口；失败静默为空，不拖垮链路） */
+export async function fetchNetlinksPath(ip: string): Promise<NetlinkPathHop[]> {
+  const url = `${BASE_URL}/netlinks/path?ip=${encodeURIComponent(ip)}`;
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const j = (await res.json()) as { ok?: boolean; path?: NetlinkPathHop[] };
+    return Array.isArray(j.path) ? j.path : [];
+  } catch (err) {
+    logger.warn(`cipipe netlinks path fetch failed for ${ip}: ${(err as Error).message}`);
+    return [];
+  }
+}
