@@ -325,9 +325,16 @@ export default function CiTopologyCanvas({
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 268px', gap: 12 }}>
         <div
           className="topo-wrap"
-          style={{ height: 560, background: '#fafbfc', cursor: dragRef.current ? 'grabbing' : 'grab' }}
+          style={{
+            height: 560, background: '#fafbfc', cursor: dragRef.current ? 'grabbing' : 'grab',
+            // 拖拽平移时禁止选中文本（否则会整屏变蓝）
+            userSelect: 'none', WebkitUserSelect: 'none',
+          }}
           onWheel={onWheel}
-          onMouseDown={e => { dragRef.current = { x: e.clientX, y: e.clientY, px: pan.x, py: pan.y }; }}
+          onMouseDown={e => {
+            if ((e.target as Element).closest('g[data-node]')) return;
+            dragRef.current = { x: e.clientX, y: e.clientY, px: pan.x, py: pan.y };
+          }}
           onMouseMove={e => {
             const d = dragRef.current;
             if (!d) return;
@@ -375,6 +382,7 @@ export default function CiTopologyCanvas({
                     return (
                       <g
                         key={p.key}
+                        data-node="1"
                         style={{ cursor: 'pointer' }}
                         onClick={() => setExpandLayer(s => ({ ...s, [p.layer]: true }))}
                       >
@@ -400,6 +408,7 @@ export default function CiTopologyCanvas({
                   return (
                     <g
                       key={p.key}
+                      data-node="1"
                       style={{ cursor: 'pointer' }}
                       opacity={dim ? 0.25 : 1}
                       onClick={ev => { ev.stopPropagation(); setSelected(s => (s === p.key ? null : p.key)); }}

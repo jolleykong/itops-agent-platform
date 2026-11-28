@@ -41,6 +41,7 @@ import {
   hardwareOsSuffix,
   isPlaceholderName,
   isStaleStatus,
+  parseObjectId,
 } from './ciFilters';
 
 // ============================================================
@@ -248,29 +249,123 @@ async function networkDimForDevice(ip: string | undefined): Promise<CiChainParen
   return { chain, root: chain[chain.length - 1] };
 }
 
-/** 网络轴：机器（Server/VM/Hypervisor）= 观测到本机 IP 的交换机 + 其上联链根源。 */
-async function networkDimForMachine(ip: string | undefined): Promise<CiChainParentDim> {
-  const rows = ip ? await fetchNetobsByIp(ip) : [];
-  const switches = [...new Set(rows.map(r => r.source_host))];
-  if (switches.length === 0) {
-    return { chain: [], missing: 'ARP 网络观测尚未覆盖本机管理 IP —— 上联链待采集' };
+/** 网络轴：机器（Server/VM/Hypervisor）= CMDB 里的接入交换机（lnkConnectableCIToNetworkDevice）。
+ *
+ *  2026-11-28 架构修正：此前读 cipipe netobs 观测表（违反"只消费 CMDB"），
+ *  现改为读 iTop 邻接类 —— 关系由 cipipe `netadj push` 写入。
+ *  交换机之间的上联链 iTop 无对应关联类，故不再逐跳展开上联（不再消费 CDP 观测）。
+ */
+async function networkDimForMachine(
+  ciId: number | undefined,
+  ip: string | undefined,
+): Promise<CiChainParentDim> {
+  if (!ciId) {
+    return { chain: [], missing: '无 iTop 对象 id，无法查 CMDB 邻接' };
   }
-  const chain: CiChainNode[] = switches.map(s => ({
-    class: 'NetworkDevice',
-    name: s,
-    relation: switches.length > 1 ? `ARP 观测交换机（共 ${switches.length} 台）` : 'ARP 观测交换机',
-    ip: s,
-  }));
-  // 逐台取观测交换机的 CDP 上联链：本身已是核心/出口（layer 0）的那台即根源；
-  // 否则沿第一台的上联延伸到核心/出口（根源=链尾）。
-  const paths = new Map<string, NetlinkPathHop[]>();
-  for (const s of switches) paths.set(s, await fetchNetlinksPath(s));
-  const coreSwitch = switches.find(s => paths.get(s)?.[0]?.layer === 0);
-  if (coreSwitch) {
-    return { chain, root: chain.find(c => c.ip === coreSwitch) };
+  const links = await fetchItopAdjacencyFor(ciId);
+  if (links.length === 0) {
+    return {
+      chain: [],
+      missing: 'CMDB 无本机网络邻接（lnkConnectableCIToNetworkDevice）—— 需在 cipipe 执行 netadj push；虚机类无对应关联类',
+    };
   }
-  chain.push(...hopsToChain(paths.get(switches[0]) ?? [], 1));
+  const chain: CiChainNode[] = [];
+  for (const l of links) {
+    chain.push({
+      class: 'NetworkDevice',
+      name: l.ndName,
+      relation: l.port ? `接入交换机（${l.port}）` : '接入交换机',
+      extra: `网络层 L${l.layer + 1}`,
+    });
+    // 沿交换机互联（CMDB 的 ND↔ND 边，CDP 已推入）继续向上直到核心/出口
+    chain.push(...(await ndUplinkChain(l.id, 0)));
+  }
+  if (chain.length === 0) return { chain: [], missing: 'CMDB 邻接无法解析到交换机对象' };
   return { chain, root: chain[chain.length - 1] };
+}
+
+/** 交换机向上链（CMDB ND↔ND 边，最多 6 跳防环） */
+async function ndUplinkChain(ndId: number, depth: number): Promise<CiChainNode[]> {
+  if (depth >= 6) return [];
+  let ups: { id: number; name: string; port: string }[] = [];
+  try {
+    const res = await itopClient.getObjects<Record<string, unknown>>(
+      'lnkConnectableCIToNetworkDevice',
+      `SELECT lnkConnectableCIToNetworkDevice WHERE connectableci_id = ${ndId}`,
+      'networkdevice_id,networkdevice_id_friendlyname,network_port',
+    );
+    if (res.success && res.data) {
+      for (const e of Object.values(res.data.objects)) {
+        const nm = fieldStr(e.fields, 'networkdevice_id_friendlyname');
+        const upId = fieldNum(e.fields, 'networkdevice_id');
+        if (!nm || !upId) continue;
+        ups.push({ id: upId, name: nm, port: fieldStr(e.fields, 'network_port') ?? '' });
+      }
+    }
+  } catch {
+    return [];
+  }
+  const out: CiChainNode[] = [];
+  for (const u of ups) {
+    out.push({
+      class: 'NetworkDevice',
+      name: u.name,
+      relation: u.port ? `上联交换机（${u.port}）` : '上联交换机',
+    });
+    out.push(...(await ndUplinkChain(u.id, depth + 1)));
+    break; // 上联取第一条路径即可，避免多路上联造成链爆炸
+  }
+  return out;
+}
+
+/** 按主机 CI id 查 CMDB 网络邻接（只读 iTop） */
+async function fetchItopAdjacencyFor(
+  ciId: number,
+): Promise<{ id: number; ndName: string; port: string; layer: number }[]> {
+  try {
+    const res = await itopClient.getObjects<Record<string, unknown>>(
+      'lnkConnectableCIToNetworkDevice',
+      `SELECT lnkConnectableCIToNetworkDevice WHERE connectableci_id = ${ciId}`,
+      'networkdevice_id,networkdevice_id_friendlyname,network_port',
+    );
+    if (!res.success || !res.data) return [];
+    const out: { id: number; ndName: string; port: string; layer: number }[] = [];
+    for (const e of Object.values(res.data.objects)) {
+      const nd = fieldStr(e.fields, 'networkdevice_id_friendlyname');
+      const id = fieldNum(e.fields, 'networkdevice_id');
+      if (!nd || !id) continue;
+      out.push({
+        id,
+        ndName: nd,
+        port: fieldStr(e.fields, 'network_port') ?? '',
+        layer: await ndLayerOf(id),
+      });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
+/** 交换机层级：无上联者为核心/出口（0），否则逐跳递增（最多 6 跳） */
+async function ndLayerOf(ndId: number, depth = 0, seen = new Set<number>()): Promise<number> {
+  if (depth >= 6 || seen.has(ndId)) return 0;
+  seen.add(ndId);
+  try {
+    const res = await itopClient.getObjects<Record<string, unknown>>(
+      'lnkConnectableCIToNetworkDevice',
+      `SELECT lnkConnectableCIToNetworkDevice WHERE connectableci_id = ${ndId}`,
+      'networkdevice_id',
+    );
+    if (!res.success || !res.data) return 0;
+    const ups = Object.values(res.data.objects)
+      .map(e => fieldNum(e.fields, 'networkdevice_id'))
+      .filter((v): v is number => !!v);
+    if (ups.length === 0) return 0;
+    return 1 + Math.max(...await Promise.all(ups.map(u => ndLayerOf(u, depth + 1, seen))));
+  } catch {
+    return 0;
+  }
 }
 
 /** 宿主轴：VM→宿主→物理机 / Hypervisor→物理机 / Server=根源 / DBServer=承载链。 */
@@ -743,10 +838,11 @@ export async function getCiChain(params: {
   // 单轴失败不拖垮整层；三轴覆盖不到的 parents（CDP 互联/机柜）归入 other 保留导航。
   let parent_dims: CiChainParentDims | undefined;
   try {
+    const selfId = parseObjectId(self.key);
     const [network, host] = await Promise.all([
       self.class === 'NetworkDevice'
         ? networkDimForDevice(selfIp)
-        : networkDimForMachine(selfIp),
+        : networkDimForMachine(selfId, selfIp),
       hostDim(self.class, f, name),
     ]);
     const rack = parents.filter(p => p.class === 'Rack');

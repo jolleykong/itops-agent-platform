@@ -20,7 +20,8 @@
  *
  * 数据来源与纪律（架构定位总纲 P1–P5）：
  *   · iTop 走 REST/OQL 按类批量拉（每类 1 次请求），不直连 iTop 库；
- *   · cipipe 走 HTTP 只读接口（netobs 观测 + netlinks 拓扑），不直连治理库；
+ *   · 网络邻接读 iTop lnkConnectableCIToNetworkDevice（cipipe netadj 已把裁决结果写入 CMDB）；
+ *   · aiops **不直连 cipipe**，观测态数据不经 CMDB 不进图（架构定位总纲 P3）；
  *   · 本服务**纯只读**，不写 iTop 也不写 cipipe。
  *
  * 关系轴（2026-11-28 用户定则）：
@@ -32,7 +33,6 @@
  *   os      运行层  Server → OsHost（本地 Zabbix 主机表）
  */
 import { itopClient } from '../../cmdb-sync/services/itopClient';
-import { fetchNetlinksTopology, fetchNetobsAll, type NetlinkTopology } from './cipipeAdjacencyService';
 import { osNameMatchesHost } from './zabbixDbMapService';
 import db from '../../../models/database';
 import {
@@ -78,6 +78,15 @@ export interface RelNode {
   dims: { network?: string; host?: string; storage?: string };
   /** 网络轴：观测到本机的交换机数量（>1 表示多源观测，接入点不唯一） */
   netObserverCount?: number;
+  /** 网络轴层级：交换机为 CDP 层级（0=核心/出口）；终端设备为其接入交换机层级+1 */
+  netLayer?: number;
+  /**
+   * 网络位置推导（**不建边**，仅展示）：
+   * VirtualMachine 是 VirtualDevice，物理上没有「接在哪个交换机端口」这条边，
+   * iTop 拒绝是模型正确。虚机的网络可达性经宿主链推导：
+   *   VM → Hypervisor → Server → 接入交换机
+   */
+  netVia?: { host: string; switchName?: string; port?: string };
 }
 
 export interface RelEdge {
@@ -200,6 +209,61 @@ const CACHE_TTL_MS = 5 * 60 * 1000;
 /** 清空缓存（治理动作后可主动失效） */
 export function invalidateRelationGraph(): void {
   cache = null;
+}
+
+// ============================================================
+// 网络邻接：**只读 CMDB**（架构定位总纲 P3）
+// ============================================================
+//
+// 2026-11-28 用户定则：治理在 cipipe 完成，规范化结果落 CMDB，aiops 只消费 CMDB。
+// 此前网络轴直接读 cipipe netobs 观测表，属架构违规（观测态绕过 CMDB 进展示层）。
+// 现在改为读 iTop 的 lnkConnectableCIToNetworkDevice —— 由 cipipe `netadj push`
+// 把已裁决邻接写入；CMDB 里没有的关系，界面就不再出现。
+//
+// 已知边界：iTop 该关联类只接受 ConnectableCI（物理机/存储等），虚机/宿主的
+// 网络邻接无法用原生类表达，因此不进 CMDB（消费端也不画）。
+
+interface ItopAdjacency {
+  /** connectableci 的 iTop 数字 id（本端，下游） */
+  ciId: number;
+  /** networkdevice 的 iTop 数字 id（对端，上游） */
+  ndId: number;
+  /** NetworkDevice 名称（iTop 里多为管理 IP） */
+  ndName: string;
+  port: string;
+}
+
+/**
+ * 拉取 CMDB 里的网络邻接（失败静默为空，不拖垮整图）。
+ *
+ * 注意：iTop 对 `connectableci_id_finalclass` 这类派生外部字段**静默忽略**
+ * （不报错、也不返回），所以类的判定必须靠数字 id 在本地解析 —— 见主流程。
+ */
+async function fetchItopAdjacency(): Promise<ItopAdjacency[]> {
+  try {
+    const res = await itopClient.getObjects<Record<string, unknown>>(
+      'lnkConnectableCIToNetworkDevice',
+      'SELECT lnkConnectableCIToNetworkDevice',
+      'connectableci_id,networkdevice_id,networkdevice_id_friendlyname,network_port',
+    );
+    if (!res.success || !res.data) {
+      logger.warn(`ciRelationGraph: 拉取网络邻接失败 ${res.error ?? ''}`);
+      return [];
+    }
+    const out: ItopAdjacency[] = [];
+    for (const entry of Object.values(res.data.objects)) {
+      const ciId = fieldNum(entry.fields, 'connectableci_id');
+      const ndId = fieldNum(entry.fields, 'networkdevice_id');
+      const ndName = fieldStr(entry.fields, 'networkdevice_id_friendlyname');
+      if (!ciId || !ndId || !ndName) continue;
+      out.push({ ciId, ndId, ndName, port: fieldStr(entry.fields, 'network_port') ?? '' });
+    }
+    logger.info(`ciRelationGraph: CMDB 网络邻接 ${out.length} 条`);
+    return out;
+  } catch (err) {
+    logger.warn(`ciRelationGraph: 拉取网络邻接异常 ${(err as Error).message}`);
+    return [];
+  }
 }
 
 /**
@@ -326,24 +390,10 @@ export async function buildRelationGraph(includeDup = false, force = false): Pro
     logger.warn(`ciRelationGraph: 友好名降级匹配 ${nameFallback} 条（数字外键缺失，建议治理）`);
   }
 
-  // ── 网络轴（cipipe 观测 + CDP 拓扑）：如实呈现多源 ──
-  let topo: NetlinkTopology = { nodes: [], edges: [], unconfirmed: [], layer_of: {} };
-  let netobs: Awaited<ReturnType<typeof fetchNetobsAll>> = [];
-  try {
-    [topo, netobs] = await Promise.all([fetchNetlinksTopology(), fetchNetobsAll()]);
-  } catch (err) {
-    logger.warn(`ciRelationGraph: cipipe 取数失败 ${(err as Error).message}`);
-  }
+  // ── 网络轴：只读 CMDB（lnkConnectableCIToNetworkDevice，由 cipipe netadj 写入）──
+  const adjacency = await fetchItopAdjacency();
 
-  /** IP → 观测交换机集合 */
-  const ipToSwitches = new Map<string, Set<string>>();
-  for (const o of netobs) {
-    if (!o.ip || !o.source_host) continue;
-    const s = ipToSwitches.get(o.ip);
-    if (s) s.add(o.source_host); else ipToSwitches.set(o.ip, new Set([o.source_host]));
-  }
-
-  /** 交换机管理 IP → NetworkDevice 键 */
+  /** 交换机名称/管理 IP → NetworkDevice 键 */
   const ndByIp = new Map<string, string>();
   for (const r of raw) {
     if (r.class !== 'NetworkDevice') continue;
@@ -351,37 +401,75 @@ export async function buildRelationGraph(includeDup = false, force = false): Pro
     if (!nodes.has(k)) continue;
     if (r.ip) ndByIp.set(r.ip, k);
     if (/^\d{1,3}(\.\d{1,3}){3}$/.test(r.name)) ndByIp.set(r.name, k);
+    ndByIp.set(r.name, k);
   }
 
-  let multiSourceHosts = 0;
-  for (const [ip, switches] of ipToSwitches) {
-    const selfKeys = (ipToKeys.get(ip) ?? []).filter(k => nodes.has(k));
-    if (selfKeys.length === 0) continue;
-    if (switches.size > 1) multiSourceHosts += 1;
-    for (const selfKey of selfKeys) {
-      const selfCls = selfKey.split(':')[0];
-      const nd = nodes.get(selfKey);
-      if (nd) nd.netObserverCount = Math.max(nd.netObserverCount ?? 0, switches.size);
-      for (const sw of switches) {
-        if (selfCls === 'NetworkDevice' && sw === ip) continue;
-        const swKey = ndByIp.get(sw)
-          ?? byName.get(sw)?.find(k => k.startsWith('NetworkDevice:') && nodes.has(k));
-        // 观测态：未经 CMDB 确认，标 observed
-        if (swKey) addEdge(selfKey, swKey, 'network', 'ARP 观测交换机', 'observed', false);
-      }
+  /** 主机 → 观测到它的交换机集合（仅用于展示「多源」，关系本身取自 CMDB） */
+  const hostSwitches = new Map<string, Set<string>>();
+  /** 交换机 → 上级交换机（CMDB 里的 ND↔ND 边，来自 CDP 双向确认） */
+  const ndUpstream = new Map<string, string[]>();
+
+  for (const a of adjacency) {
+    // connectableci 的类在本地按 id 解析（iTop 不返回 *_finalclass 派生字段）
+    const fromKey = byId.get(`Server:${a.ciId}`)
+      ?? byId.get(`NetworkDevice:${a.ciId}`)
+      ?? byId.get(`StorageSystem:${a.ciId}`)
+      ?? byId.get(`PDU:${a.ciId}`)
+      ?? byId.get(`UPS:${a.ciId}`);
+    if (!fromKey || !nodes.has(fromKey)) continue;
+    const swKey = ndByIp.get(a.ndName)
+      ?? byName.get(a.ndName)?.find(k => k.startsWith('NetworkDevice:') && nodes.has(k));
+    if (!swKey) continue;
+
+    // connectableci 是 NetworkDevice → 交换机互联（CDP 已推入 CMDB）
+    // 这说明 iTop 的 ConnectableCI 语义覆盖了 ND：物理链路只存这一层。
+    if (fromKey.startsWith('NetworkDevice:')) {
+      if (fromKey === swKey) continue;
+      const arr = ndUpstream.get(fromKey);
+      if (arr) arr.push(swKey); else ndUpstream.set(fromKey, [swKey]);
+      addEdge(fromKey, swKey, 'network',
+        a.port ? `上联交换机（${a.port}）` : '上联交换机', 'itop', true);
+      continue;
     }
+
+    // 其余为终端接入边（Server/Storage 等 ConnectableCI）
+    const s = hostSwitches.get(fromKey);
+    if (s) s.add(swKey); else hostSwitches.set(fromKey, new Set([swKey]));
+    addEdge(fromKey, swKey, 'network',
+      a.port ? `接入交换机（${a.port}）` : '接入交换机', 'itop', true);
+  }
+  let multiSourceHosts = 0;
+  for (const [hostKey, sws] of hostSwitches) {
+    if (sws.size > 1) multiSourceHosts += 1;
+    const n = nodes.get(hostKey);
+    if (n) n.netObserverCount = sws.size;
   }
 
-  // 交换机 → 上联交换机（CDP 采集，设备级拓扑）
-  const layerOf = topo.layer_of ?? {};
-  for (const e of topo.edges ?? []) {
-    const a = ndByIp.get(e.a) ?? byName.get(e.a)?.find(k => k.startsWith('NetworkDevice:'));
-    const b = ndByIp.get(e.b) ?? byName.get(e.b)?.find(k => k.startsWith('NetworkDevice:'));
-    if (!a || !b || !nodes.has(a) || !nodes.has(b)) continue;
-    const la = layerOf[e.a] ?? 99;
-    const lb = layerOf[e.b] ?? 99;
-    const [down, up] = la <= lb ? [a, b] : [b, a];
-    addEdge(down, up, 'network', 'CDP 上联', 'topology', false);
+  // 交换机层级：沿 ND↔ND 边向上，无上游者为核心/出口（layer 0）
+  const ndLayer = new Map<string, number>();
+  const resolveNdLayer = (key: string, seen = new Set<string>()): number => {
+    const cached = ndLayer.get(key);
+    if (cached !== undefined) return cached;
+    if (seen.has(key)) return 0;
+    seen.add(key);
+    const ups = ndUpstream.get(key);
+    const l = !ups || ups.length === 0 ? 0 : 1 + Math.max(...ups.map(u => resolveNdLayer(u, seen)));
+    ndLayer.set(key, l);
+    return l;
+  };
+  for (const key of nodes.keys()) {
+    if (key.startsWith('NetworkDevice:')) resolveNdLayer(key);
+  }
+  // 终端设备的网络层级 = 接入交换机层级 + 1
+  for (const [hostKey, sws] of hostSwitches) {
+    const n = nodes.get(hostKey);
+    if (!n) continue;
+    const layers = [...sws].map(k => ndLayer.get(k)).filter((v): v is number => v !== undefined);
+    if (layers.length) n.netLayer = Math.min(...layers) + 1;
+  }
+  for (const [k, l] of ndLayer) {
+    const n = nodes.get(k);
+    if (n) n.netLayer = l;
   }
 
   // ── 运行层（os 轴）：物理机 → 操作系统（本地 Zabbix 主机表）──
@@ -440,6 +528,41 @@ export async function buildRelationGraph(includeDup = false, force = false): Pro
     }
   }
 
+  // ── 虚机网络位置推导（不建边）──
+  // 模型依据：VirtualMachine 是 VirtualDevice（无物理端口），iTop 因此拒绝把它
+  // 写成 lnkConnectableCIToNetworkDevice 的 connectableci —— 这是模型正确，不是缺陷。
+  // 虚机的网络可达性只能经宿主链继承：VM → Hypervisor → Server → 接入交换机。
+  // 这条推导也说明了「多维度拓扑」的意义：单轴断处可跨轴续接。
+  const hostUp = new Map<string, string[]>();
+  const netUp = new Map<string, { sw: string; port: string }[]>();
+  for (const e of edges) {
+    if (e.axis === 'host') {
+      const arr = hostUp.get(e.from);
+      if (arr) arr.push(e.to); else hostUp.set(e.from, [e.to]);
+    }
+    if (e.axis === 'network') {
+      const arr = netUp.get(e.from);
+      if (arr) arr.push({ sw: e.to, port: e.relation });
+      else netUp.set(e.from, [{ sw: e.to, port: e.relation }]);
+    }
+  }
+  for (const n of nodeList) {
+    if (n.class !== 'VirtualMachine' || n.netLayer !== undefined) continue;
+    const hvKey = hostUp.get(n.key)?.[0];
+    if (!hvKey) continue;
+    const hostKey = hostUp.get(hvKey)?.[0];
+    if (!hostKey) continue;
+    const sw = netUp.get(hostKey)?.[0];
+    const hostNode = nodes.get(hostKey);
+    n.netVia = {
+      host: hostNode?.name ?? hostKey,
+      switchName: sw ? nodes.get(sw.sw)?.name : undefined,
+      port: sw?.port,
+    };
+    // 层级也继承宿主机（+1 表示经虚拟化一跳）
+    if (hostNode?.netLayer !== undefined) n.netLayer = hostNode.netLayer + 1;
+  }
+
   // ── 统计（OS 层是 Zabbix 主机虚拟类，不属 iTop CI，单独计量）──
   const nativeNodes = nodeList.filter(n => n.class !== 'OsHost');
   const byClass: Record<string, number> = {};
@@ -495,11 +618,18 @@ export async function buildRelationGraph(includeDup = false, force = false): Pro
   if (byAxis.storage === 0) {
     gaps.push(`${AXIS_META.storage.label}：CMDB 未采集 Server/VM ↔ 存储卷挂载关系（logicalvolume / lnkservertovolume 为空），全部对象无存储轴`);
   }
-  if (netobs.length === 0) {
-    gaps.push('网络轴：cipipe netobs 无观测数据（服务不可达或未采集）');
+  if (adjacency.length === 0) {
+    gaps.push('网络轴：CMDB 无网络邻接（lnkConnectableCIToNetworkDevice 为空）—— 需在 cipipe 执行 netadj push / netadj cdp');
   }
-  if (byAxis.network === 0 && netobs.length > 0) {
-    gaps.push('网络轴：netobs 观测到的 IP 未匹配到 CMDB 对象（管理 IP 缺失或命名不一致）');
+  if (byAxis.network > 0 && ndLayer.size > 0) {
+    const layer0 = [...ndLayer.entries()].filter(([, l]) => l === 0).length;
+    gaps.push(
+      `网络轴：CMDB 交换机互联 ${ndUpstream.size} 台已建有上联；${layer0} 台无上联记录` +
+      '（其中含真正的核心/出口，也含 CDP 尚未采集到的交换机——如需补全请扩采并重跑 netadj cdp）',
+    );
+  }
+  if (byAxis.network === 0 && adjacency.length > 0) {
+    gaps.push('网络轴：CMDB 邻接的主机未匹配到本次拉取的对象（如虚机邻接在 iTop 无对应关联类）');
   }
   if (byAxis.os === 0) {
     gaps.push('运行层：本地 Zabbix 主机表未匹配到 OS 层（物理机命名不含硬件后缀？）');
