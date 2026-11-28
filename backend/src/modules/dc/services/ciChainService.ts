@@ -34,6 +34,14 @@ import {
   type NetlinkTopology,
   type NetobsRow,
 } from './cipipeAdjacencyService';
+import {
+  RE_DUP_RESIDUE,
+  fieldNum,
+  fieldStr,
+  hardwareOsSuffix,
+  isPlaceholderName,
+  isStaleStatus,
+} from './ciFilters';
 
 // ============================================================
 // 类型
@@ -99,16 +107,18 @@ function esc(s: string): string {
   return s.replace(/'/g, "\\'");
 }
 
-/** 各类 self 查询的 output_fields（只列确认存在的字段，减少 REST 报错面） */
+/** 各类 self 查询的 output_fields（只列确认存在的字段，减少 REST 报错面）
+ *  数字外键（rack_id / server_id / virtualhost_id / system_id）在前，供精确解析；
+ *  对应 *_friendlyname 保留作降级与展示。 */
 const SELF_FIELDS: Record<string, string> = {
-  Server: 'name,status,brand_name,model_name,serialnumber,managementip,osfamily_name,rack_id_friendlyname',
-  Hypervisor: 'name,status,managementip,server_id_friendlyname',
-  VirtualMachine: 'name,status,osfamily_name,managementip,virtualhost_id_friendlyname',
-  DBServer: 'name,status,system_id_friendlyname',
-  NetworkDevice: 'name,status,managementip,brand_name,model_name,rack_id_friendlyname',
-  StorageSystem: 'name,status,brand_name,model_name,rack_id_friendlyname',
-  PDU: 'name,status,rack_id_friendlyname',
-  UPS: 'name,status,rack_id_friendlyname',
+  Server: 'name,status,brand_name,model_name,serialnumber,managementip,osfamily_name,rack_id,rack_id_friendlyname',
+  Hypervisor: 'name,status,managementip,server_id,server_id_friendlyname',
+  VirtualMachine: 'name,status,osfamily_name,managementip,virtualhost_id,virtualhost_id_friendlyname',
+  DBServer: 'name,status,system_id,system_id_friendlyname',
+  NetworkDevice: 'name,status,managementip,brand_name,model_name,rack_id,rack_id_friendlyname',
+  StorageSystem: 'name,status,brand_name,model_name,rack_id,rack_id_friendlyname',
+  PDU: 'name,status,rack_id,rack_id_friendlyname',
+  UPS: 'name,status,rack_id,rack_id_friendlyname',
 };
 
 /** 兜底最小字段集（output_fields 含类不存在的字段时降级重试） */
@@ -120,18 +130,10 @@ const VM_FIELDS = 'name,status,osfamily_name,managementip,virtualhost_id_friendl
 /** 纯 IPv4 字面量名称：Zabbix 早期按 IP 建 CI 的遗留命名 */
 const PURE_IP_NAME = /^\d{1,3}(\.\d{1,3}){3}$/;
 
-/** 同步重复残渣命名（cipipe itop-dedup 同类产物，过期内容页可见可清理） */
-const RE_DUP_RESIDUE = /__DUP_(?:SERVER|VIRTUALMACHINE|HYPERVISOR|DBSERVER|NETWORKDEVICE|STORAGESYSTEM)_\d+$/;
-
-/**
- * 链路展开通用残渣过滤（代码层，不能放 OQL —— OQL `!=` 会连 NULL 一起排除）：
- * status 未设置（NULL）/production/active 正常；inactive/obsolete 为改名闭环淘汰的
- * 旧命名或同步残渣（如 VR-SSAPP18__DUP_VIRTUALMACHINE_2031 仍挂着同 IP），不进链路。
- */
-function isStaleCiStatus(status: string | null | undefined): boolean {
-  const s = (status ?? '').trim().toLowerCase();
-  return s === 'inactive' || s === 'obsolete';
-}
+// 残渣/弃用/占位/命名的判定规则统一取自 ciFilters（2026-11-28 治理第一批），
+// 不再在本文件复制正则；isStaleCiStatus 用别名保持既有调用点不变。
+// 说明：链路展开的过期过滤必须在代码层做，不能写进 OQL —— iTop 的 `!=` 会把 NULL 一起排除。
+const isStaleCiStatus = isStaleStatus;
 
 interface ITopEntry {
   key: string | number;
@@ -159,11 +161,48 @@ async function listByOQL(className: string, oql: string, fields: string): Promis
   return Object.values(res.data.objects);
 }
 
-function fieldStr(fields: Record<string, unknown>, key: string): string | undefined {
-  const v = fields[key];
-  if (typeof v === 'string' && v.trim()) return v.trim();
-  return undefined;
+/**
+ * 按数字外键精确取上级对象（2026-11-28 治理第一批）。
+ * iTop REST 的 core/get 支持 key=<id>，直接取到唯一对象，避免同名歧义。
+ * 取不到（id 为空/为 0/该类不存在该 id）返回 null，由调用方降级到友好名。
+ */
+async function parentById(
+  cls: string,
+  id: number | undefined,
+  relation = '',
+): Promise<CiChainNode | null> {
+  if (!id) return null;
+  try {
+    const res = await itopClient.getObjects(cls, String(id), 'name,status,managementip');
+    if (!res.success || !res.data) return null;
+    const first = Object.values(res.data.objects)[0];
+    if (!first) return null;
+    const nm = fieldStr(first.fields, 'name');
+    if (!nm) return null;
+    // 占位宿主不当上级（它是「未关联」的显式标记）
+    if (isPlaceholderName(nm)) return null;
+    const st = normalizeStatus(fieldStr(first.fields, 'status'));
+    if (isStaleCiStatus(st)) return null;
+    return {
+      class: first.class || cls,
+      name: nm,
+      relation: relation || DEFAULT_PARENT_RELATION[cls] || '上级',
+      status: st,
+      ip: fieldStr(first.fields, 'managementip'),
+    };
+  } catch {
+    return null;
+  }
 }
+
+/** parentById 未显式给 relation 时的默认文案 */
+const DEFAULT_PARENT_RELATION: Record<string, string> = {
+  Rack: '所在机柜',
+  Server: '物理服务器',
+  Hypervisor: '虚拟化宿主',
+  FunctionalCI: '承载对象',
+  VirtualMachine: '承载对象',
+};
 
 /** other 占位设备：`SELECT DatacenterDevice WHERE name=… AND finalclass != 'Server'` 反查实际类名 */
 async function resolveConcreteDeviceClass(name: string): Promise<string | null> {
@@ -238,14 +277,14 @@ async function networkDimForMachine(ip: string | undefined): Promise<CiChainPare
 async function hostDim(selfClass: string, f: Record<string, unknown>, name: string): Promise<CiChainParentDim> {
   if (selfClass === 'VirtualMachine') {
     const hv = fieldStr(f, 'virtualhost_id_friendlyname');
-    if (!hv || hv === 'ZBX-VM-Unassigned-Host') {
+    if (!hv || isPlaceholderName(hv)) {
       return { chain: [], missing: '未关联虚拟化宿主（virtualhost_id 为空/占位）—— CMDB 建立关联后自动入链' };
     }
     const chain: CiChainNode[] = [{ class: 'Hypervisor', name: hv, relation: '虚拟化宿主' }];
     // 宿主轴根源：宿主所挂的物理机（Hypervisor.server_id）
     const hvRows = await listByOQL('Hypervisor', `SELECT Hypervisor WHERE name = '${esc(hv)}'`, 'name,server_id_friendlyname');
     const hostName = hvRows.length ? fieldStr(hvRows[0].fields, 'server_id_friendlyname') : undefined;
-    if (hostName && hostName !== 'ZBX-VM-Unassigned-Host') {
+    if (hostName && !isPlaceholderName(hostName)) {
       chain.push({ class: 'Server', name: hostName, relation: '物理服务器（宿主轴根源）' });
     }
     return { chain, root: chain[chain.length - 1] };
@@ -264,7 +303,7 @@ async function hostDim(selfClass: string, f: Record<string, unknown>, name: stri
     const chain: CiChainNode[] = [];
     let root: CiChainNode | undefined;
     const host = fieldStr(f, 'system_id_friendlyname');
-    if (host && host !== 'ZBX-DB-Host-Unassigned') chain.push({ class: 'FunctionalCI', name: host, relation: '承载对象' });
+    if (host && !isPlaceholderName(host)) chain.push({ class: 'FunctionalCI', name: host, relation: '承载对象' });
     try {
       for (const p of await dbServerOsParents(name)) {
         chain.push(p);
@@ -339,11 +378,6 @@ interface LocalServerRow {
   name: string;
   ip_address: string | null;
   os: string | null;
-}
-
-/** 硬件名（svr-MGMT/iLo/idrac/bmc/imm-{IP}-{OS名}）→ OS 主机名后缀（2026-11-26 起前缀大写 SVR-，/i 兼容两代） */
-function hardwareOsSuffix(serverName: string): string {
-  return serverName.replace(/^svr-(?:MGMT|iLo|idrac|bmc|imm)-[\d.]+-/i, '');
 }
 
 /**
@@ -505,31 +539,55 @@ export async function getCiChain(params: {
   const parents: CiChainNode[] = [];
   const children: CiChainNode[] = [];
 
-  // 父关系（从 self 字段直接取友好名）
+  // 父关系：数字外键精确解析优先，友好名降级兜底（2026-11-28 治理第一批）
+  // 逐台展开此前完全依赖 `*_id_friendlyname` 文本，同名对象（如 svr-iLo-10.240.0.112
+  // 存在 -fish / -fssc-Vmware 两份）会选错上级。iTop REST 的 core/get 支持 key=<id>
+  // 直接取对象，因此改为：有数字外键就按 id 精确取；取不到才用友好名。
   switch (self.class) {
     case 'Server':
     case 'NetworkDevice':
     case 'StorageSystem':
     case 'PDU':
-    case 'UPS':
-      parents.push(...rackParent(fieldStr(f, 'rack_id_friendlyname')));
+    case 'UPS': {
+      const rack = await parentById('Rack', fieldNum(f, 'rack_id'));
+      if (rack) parents.push(rack);
+      else parents.push(...rackParent(fieldStr(f, 'rack_id_friendlyname')));
       break;
+    }
     case 'Hypervisor': {
-      const host = fieldStr(f, 'server_id_friendlyname');
-      if (host) parents.push({ class: 'Server', name: host, relation: '物理服务器' });
+      const host = await parentById('Server', fieldNum(f, 'server_id'));
+      if (host) parents.push(host);
+      else {
+        const nm = fieldStr(f, 'server_id_friendlyname');
+        if (nm) parents.push({ class: 'Server', name: nm, relation: '物理服务器' });
+      }
       break;
     }
     case 'VirtualMachine': {
-      const hv = fieldStr(f, 'virtualhost_id_friendlyname');
-      // 占位宿主（未关联：ZBX-VM-Unassigned-Host）不展示——网络落地视角下
-      // parents 是唯一的宿主导航入口，假宿主会把用户带进死胡同
-      if (hv && hv !== 'ZBX-VM-Unassigned-Host') parents.push({ class: 'Hypervisor', name: hv, relation: '虚拟化宿主' });
+      // 占位宿主不展示——网络落地视角下 parents 是唯一的宿主导航入口，
+      // 假宿主会把用户带进死胡同
+      const hv = await parentById('Hypervisor', fieldNum(f, 'virtualhost_id'));
+      if (hv) parents.push(hv);
+      else {
+        const nm = fieldStr(f, 'virtualhost_id_friendlyname');
+        if (nm && !isPlaceholderName(nm)) {
+          parents.push({ class: 'Hypervisor', name: nm, relation: '虚拟化宿主' });
+        }
+      }
       break;
     }
     case 'DBServer': {
-      const host = fieldStr(f, 'system_id_friendlyname');
-      // 占位符（未关联的 DBServer 全部指向 ZBX-DB-Host-Unassigned）不展示
-      if (host && host !== 'ZBX-DB-Host-Unassigned') parents.push({ class: 'FunctionalCI', name: host, relation: '承载对象' });
+      // 承载对象可能是物理机或虚拟机：按 id 依次试两个类
+      let carrier = await parentById('Server', fieldNum(f, 'system_id'), '承载对象');
+      if (!carrier) carrier = await parentById('VirtualMachine', fieldNum(f, 'system_id'), '承载对象');
+      if (carrier) parents.push(carrier);
+      else {
+        // 占位符（未关联的 DBServer 全部指向 ZBX-DB-Host-Unassigned）不展示
+        const nm = fieldStr(f, 'system_id_friendlyname');
+        if (nm && !isPlaceholderName(nm)) {
+          parents.push({ class: 'FunctionalCI', name: nm, relation: '承载对象' });
+        }
+      }
       // Zabbix gv$instance 派生：DBServer → 其 RAC 全部 OS 节点（跨集群实例）
       try {
         parents.push(...(await dbServerOsParents(name)));
@@ -1172,7 +1230,7 @@ async function vmOsChain(osName: string): Promise<CiChain> {
   // 父：虚拟化宿主（占位符 ZBX-VM-Unassigned-Host 表示未关联，不展示）
   const parents: CiChainNode[] = [];
   const hv = fieldStr(f, 'virtualhost_id_friendlyname');
-  if (hv && hv !== 'ZBX-VM-Unassigned-Host') {
+  if (hv && !isPlaceholderName(hv)) {
     parents.push({ class: 'Hypervisor', name: hv, relation: '虚拟化宿主' });
   }
 

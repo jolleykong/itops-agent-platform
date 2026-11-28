@@ -11,11 +11,13 @@
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import api from '../../lib/api';
+import CiTopologyCanvas from './CiTopologyCanvas';
 
 type RelAxis = 'host' | 'storage' | 'network' | 'db' | 'rack' | 'os';
 
 interface RelNode {
   key: string;
+  id?: number;
   class: string;
   name: string;
   ip?: string;
@@ -25,6 +27,8 @@ interface RelNode {
   parents: number;
   axes: RelAxis[];
   dims: { network?: string; host?: string; storage?: string };
+  /** 网络轴：观测到本机的交换机数量（>1 表示接入点不唯一） */
+  netObserverCount?: number;
 }
 
 interface RelEdge {
@@ -32,6 +36,10 @@ interface RelEdge {
   to: string;
   axis: RelAxis;
   relation: string;
+  /** itop=CMDB 权威；observed=网络观测；topology=CDP；local=本地库 */
+  origin: 'itop' | 'observed' | 'topology' | 'local';
+  /** 是否数字外键精确解析 */
+  exact: boolean;
 }
 
 interface RelStats {
@@ -42,6 +50,12 @@ interface RelStats {
   isolated: number;
   byAxis: Record<string, number>;
   byClass: Record<string, number>;
+  /** 数字外键精确解析的关系数（治理指标：越高越好） */
+  idJoin: number;
+  /** 友好名降级兜底的关系数（治理指标：应逐步归零） */
+  nameFallback: number;
+  /** 多源观测的机器数（网络接入点不唯一） */
+  multiSourceHosts: number;
 }
 
 interface RelGraph {
@@ -85,7 +99,7 @@ const AXIS_BADGE: Record<RelAxis, string> = {
 
 const PAGE_SIZE = 50;
 
-type Tab = 'detail' | 'roots' | 'isolated' | 'matrix';
+type Tab = 'canvas' | 'detail' | 'roots' | 'isolated' | 'matrix';
 
 export default function CiRelationsPage() {
   const [graph, setGraph] = useState<RelGraph | null>(null);
@@ -93,18 +107,21 @@ export default function CiRelationsPage() {
   const [error, setError] = useState<string | null>(null);
   const [includeDup, setIncludeDup] = useState(false);
 
-  const [tab, setTab] = useState<Tab>('detail');
+  const [tab, setTab] = useState<Tab>('canvas');
   const [clsFilter, setClsFilter] = useState<string>('');
   const [axisFilter, setAxisFilter] = useState<'' | RelAxis>('');
   const [keyword, setKeyword] = useState('');
   const [page, setPage] = useState(0);
   const [expanded, setExpanded] = useState<string | null>(null);
 
-  const load = useCallback(async (withDup: boolean) => {
+  const load = useCallback(async (withDup: boolean, force = false) => {
     setLoading(true);
     setError(null);
     try {
-      const res = await api.get('/dc/ci-relations', { params: withDup ? { dup: 1 } : {} });
+      const params: Record<string, string | number> = {};
+      if (withDup) params.dup = 1;
+      if (force) params.refresh = 1;
+      const res = await api.get('/dc/ci-relations', { params });
       const data = (res as unknown as { data?: RelGraph }).data ?? (res as unknown as RelGraph);
       setGraph(data ?? null);
       setPage(0);
@@ -171,7 +188,7 @@ export default function CiRelationsPage() {
     return (
       <div className="cmdb-proto" style={{ padding: '18px 22px' }}>
         <div className="notice">加载失败：{error ?? '无数据'}</div>
-        <button className="btn" onClick={() => void load(includeDup)}>重试</button>
+        <button className="btn" onClick={() => void load(includeDup, true)}>重试</button>
       </div>
     );
   }
@@ -194,7 +211,7 @@ export default function CiRelationsPage() {
           />
           含同步残渣（__DUP_*）
         </label>
-        <button className="btn" style={{ marginLeft: 12 }} onClick={() => void load(includeDup)}>重新构建</button>
+        <button className="btn" style={{ marginLeft: 12 }} onClick={() => void load(includeDup, true)} title="跳过缓存强制重建（约 8 秒）">重新构建</button>
       </div>
 
       <div className="workspace">
@@ -253,6 +270,7 @@ export default function CiRelationsPage() {
               </a>
             ))}
             <div className="grp-t">视图</div>
+            <a className={tab === 'canvas' ? 'on' : ''} onClick={() => setTab('canvas')}>拓扑画布</a>
             <a className={tab === 'detail' ? 'on' : ''} onClick={() => setTab('detail')}>关系明细</a>
             <a className={tab === 'roots' ? 'on' : ''} onClick={() => setTab('roots')}>网络根源聚合</a>
             <a className={tab === 'isolated' ? 'on' : ''} onClick={() => setTab('isolated')}>孤立对象（{stats.isolated}）</a>
@@ -286,12 +304,45 @@ export default function CiRelationsPage() {
                 <div className="n">{stats.byAxis.children.toLocaleString()}</div>
                 <div className="s">占 {pct(stats.byAxis.children)}%</div>
               </div>
+              <div className="mcard">
+                <div className="l">关联质量</div>
+                <div className="n" style={{ color: stats.nameFallback > 0 ? '#b45309' : '#047857' }}>
+                  {(stats.idJoin + stats.nameFallback) > 0
+                    ? `${Math.round((stats.idJoin / (stats.idJoin + stats.nameFallback)) * 100)}%`
+                    : '—'}
+                </div>
+                <div className="s">
+                  数字外键 {stats.idJoin} 条
+                  {stats.nameFallback > 0 && ` · 降级 ${stats.nameFallback} 条`}
+                </div>
+              </div>
+              <div className="mcard">
+                <div className="l">多源观测机器</div>
+                <div className="n" style={{ color: stats.multiSourceHosts > 0 ? '#b45309' : undefined }}>
+                  {stats.multiSourceHosts.toLocaleString()}
+                </div>
+                <div className="s">被多台交换机同时观测，接入点不唯一</div>
+              </div>
             </div>
 
             {graph.gaps.length > 0 && (
               <div className="notice">
                 {graph.gaps.map((g, i) => <div key={i}>⚠ {g}</div>)}
               </div>
+            )}
+
+            {tab === 'canvas' && (
+              <>
+                <div className="sec-t">
+                  关系拓扑画布
+                  <span className="badge">按关系轴分层</span>
+                  <span className="badge b">数字外键 {stats.idJoin}</span>
+                  {stats.nameFallback > 0 && (
+                    <span className="badge o">友好名降级 {stats.nameFallback}</span>
+                  )}
+                </div>
+                <CiTopologyCanvas nodes={graph.nodes} edges={graph.edges} />
+              </>
             )}
 
             {tab === 'detail' && (
@@ -339,6 +390,11 @@ export default function CiRelationsPage() {
                           </td>
                           <td style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={[n.dims.network, n.dims.host].filter(Boolean).join(' / ')}>
                             {n.dims.host ?? n.dims.network ?? '—'}
+                            {n.netObserverCount != null && n.netObserverCount > 1 && (
+                              <span className="badge o" style={{ marginLeft: 4 }} title="被多台交换机同时观测，接入点不唯一">
+                                {n.netObserverCount} 源
+                              </span>
+                            )}
                           </td>
                           <td>
                             <button
@@ -481,6 +537,21 @@ export default function CiRelationsPage() {
   );
 }
 
+/** 关系来源标签（CMDB 权威 vs 观测态，避免两种可信度混为一谈） */
+const ORIGIN_LABEL: Record<string, string> = {
+  itop: 'CMDB',
+  observed: '观测',
+  topology: 'CDP',
+  local: '本地库',
+};
+
+const ORIGIN_BADGE: Record<string, string> = {
+  itop: 'b',
+  observed: 'o',
+  topology: 'g',
+  local: '',
+};
+
 /** 单个 CI 的全量关系展开：上级（按三轴分组）+ 下级（按关系类型分组） */
 function NodeRelations({
   nodeKey, node, outs, ins, nodeByKey, isolated,
@@ -523,6 +594,12 @@ function NodeRelations({
               {edges.map((e, i) => (
                 <div key={i} style={{ fontSize: 12, padding: '3px 0 3px 8px', color: '#374151' }}>
                   → {label(e.to)} <span style={{ color: '#9ca3af' }}>（{e.relation}）</span>
+                  <span className={`badge ${ORIGIN_BADGE[e.origin] ?? ''}`} style={{ marginLeft: 4 }}>
+                    {ORIGIN_LABEL[e.origin] ?? e.origin}
+                  </span>
+                  {e.origin === 'itop' && !e.exact && (
+                    <span className="badge" style={{ marginLeft: 3 }} title="友好名文本降级匹配，非数字外键">降级</span>
+                  )}
                 </div>
               ))}
             </div>
