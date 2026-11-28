@@ -129,6 +129,30 @@ export async function fetchNetobsByIp(ip: string): Promise<NetobsRow[]> {
   }
 }
 
+/**
+ * 拉取全量 netobs 观测（供 CMDB 全量关系图一次性建网）。
+ * 按 limit+offset 翻页，直到拿不满一页或触顶 maxRows；失败返回已拿到的部分。
+ */
+export async function fetchNetobsAll(maxRows = 20000): Promise<NetobsRow[]> {
+  const pageSize = 2000;
+  const out: NetobsRow[] = [];
+  for (let offset = 0; offset < maxRows; offset += pageSize) {
+    const url = `${BASE_URL}/netobs/observations?limit=${pageSize}&offset=${offset}`;
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const j = (await res.json()) as { ok?: boolean; items?: NetobsRow[] };
+      const items = Array.isArray(j.items) ? j.items : [];
+      out.push(...items);
+      if (items.length < pageSize) break;
+    } catch (err) {
+      logger.warn(`cipipe netobs fetch all failed at offset ${offset}: ${(err as Error).message}`);
+      break;
+    }
+  }
+  return out;
+}
+
 export interface NetlinkPathHop {
   device: string;
   name: string | null;

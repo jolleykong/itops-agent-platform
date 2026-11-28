@@ -13,6 +13,7 @@ import powerPanelsRouter from './powerPanels';
 import powerFeedsRouter from './powerFeeds';
 import cablesRouter from './cables';
 import ciChainRouter from './ciChain';
+import ciRelationsRouter from './ciRelations';
 
 const router = Router();
 
@@ -32,6 +33,7 @@ router.use('/power-panels', powerPanelsRouter);
 router.use('/power-feeds', powerFeedsRouter);
 router.use('/cables', cablesRouter);
 router.use('/ci-chain', ciChainRouter);
+router.use('/ci-relations', ciRelationsRouter);
 
 // GET /health — 快速检查路由是否存活
 router.get('/health', (_req, res) => {

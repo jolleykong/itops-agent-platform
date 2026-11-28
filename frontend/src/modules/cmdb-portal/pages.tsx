@@ -7,12 +7,12 @@
  */
 import { useEffect } from "react";
 import "./proto.css";
+import CiRelationsPage from "./CiRelationsPage";
 import {
   SCREEN_RESOURCE,
   SCREEN_COST,
   SCREEN_SERVICE_RISK,
   SCREEN_COMPLIANCE,
-  PAGE_WORKBENCH,
   PAGE_TOPO_CANVAS,
   PAGE_IPAM,
   PAGE_IMPACT,
@@ -72,7 +72,8 @@ export function ScreenCompliance() {
 /* ============ 功能页（浅色 workspace） ============ */
 
 export function WorkbenchPage() {
-  return <ProtoPage html={PAGE_WORKBENCH} />;
+  // 资源工作台接真实数据：CMDB 全量 CI 关系展开（/dc/ci-relations）
+  return <CiRelationsPage />;
 }
 
 export function TopoCanvasPage() {
