@@ -23,17 +23,7 @@ import db from '../../../models/database';
 import { logger } from '../../../utils/logger';
 import { itopClient } from '../../cmdb-sync/services/itopClient';
 import { findDbHostsByOsHost, findDbHostsByDbServerName, osNameMatchesHost } from './zabbixDbMapService';
-import {
-  fetchNetlinksPath,
-  fetchNetlinksTopology,
-  fetchNetobsByHost,
-  fetchNetobsByIp,
-  groupByIfname,
-  groupByVid,
-  type NetlinkPathHop,
-  type NetlinkTopology,
-  type NetobsRow,
-} from './cipipeAdjacencyService';
+import { cmdbNdNeighbors, cmdbUplinkChain } from './cmdbAdjacencyService';
 import {
   RE_DUP_RESIDUE,
   fieldNum,
@@ -227,26 +217,20 @@ async function resolveConcreteDeviceClass(name: string): Promise<string | null> 
 
 const MISSING_STORAGE = '存储挂载关系未采集（Server↔存储卷关联数据为空，CMDB 治理入库后自动接入）——占位';
 
-/** CDP 上联链 hops → 轴链节点（hops[0]=本机；末个 layer=0 的为核心/出口根源） */
-function hopsToChain(hops: { device: string; name: string | null; ports?: string[]; layer: number | null }[], fromIdx: number): CiChainNode[] {
-  return hops.slice(fromIdx).map((h, i) => ({
-    class: 'NetworkDevice',
-    name: h.name || h.device,
-    relation: h.layer === 0 ? '核心/出口层' : `第 ${i + 1} 跳上联 · L${h.layer ?? '?'}`,
-    ip: h.device,
-    extra: h.ports?.length ? h.ports.join(' · ') : undefined,
-  }));
-}
-
-/** 网络轴：网络设备自身——按管理 IP 走 CDP 上联链到核心/出口。 */
+/** 网络轴：网络设备自身——沿 CMDB 的 ND↔ND 邻接逐跳上溯到核心/出口。
+ *
+ *  2026-11-28 架构修正：此前调 cipipe `fetchNetlinksPath` 读 CDP 观测。
+ *  现读 iTop `lnkConnectableCIToNetworkDevice`（由 cipipe `netadj cdp` 写入），
+ *  消费端不再直连 cipipe —— 用户定调「只能且必须只从 iTop 消费」。
+ */
 async function networkDimForDevice(ip: string | undefined): Promise<CiChainParentDim> {
   if (!ip) return { chain: [], missing: '无管理 IP 字段，无法定位上联链' };
-  const hops = await fetchNetlinksPath(ip);
-  // 自身已是核心/出口层（BFS layer 0）：网络轴到此为止，自身即根源
-  if (hops[0]?.layer === 0) return { chain: [], missing: '自身为核心/出口层 —— 即网络轴的根源' };
-  const chain = hopsToChain(hops, 1);
-  if (chain.length === 0) return { chain: [], missing: 'CDP 上联链未采集（netlinks 拓扑未覆盖该设备）' };
-  return { chain, root: chain[chain.length - 1] };
+  const r = await cmdbUplinkChain(ip);
+  if (r.core) return { chain: [], missing: '自身为核心/出口层 —— 即网络轴的根源' };
+  if (r.chain.length === 0) {
+    return { chain: [], missing: 'CMDB 无上联记录（该交换机互联关系未采集，需 cipipe netadj cdp）' };
+  }
+  return { chain: r.chain, root: r.chain[r.chain.length - 1] };
 }
 
 /** 网络轴：机器（Server/VM/Hypervisor）= CMDB 里的接入交换机（lnkConnectableCIToNetworkDevice）。
@@ -573,28 +557,8 @@ export async function getCiChain(params: {
   if (className === 'VmOs') {
     return vmOsChain(name);
   }
-  // NetPort / Vlan：网络邻接链路虚拟类（数据源 cipipe netobs，见下）
-  if (className === 'NetPort') {
-    return netPortChain(name);
-  }
-  if (className === 'Vlan') {
-    return vlanChain(name);
-  }
-  // NetPeer：CDP 邻接设备（cipipe netlinks 拓扑中未落 iTop 的交换机/路由器，
-  // 名称编码 `devid@ip`；未纳管单侧观测只有 devid 无 ip，展开为叶子）
-  if (className === 'NetPeer') {
-    return netPeerChain(name);
-  }
-  // IpAddr：未落 CMDB 的邻接对端（叶子节点，展开只给提示）
-  if (className === 'IpAddr') {
-    return {
-      self: { class: 'IpAddr', name },
-      parents: [],
-      children: [],
-      source: 'none',
-      degraded: '该 IP 未落 CMDB（cipipe 裁决为 none/conflict，待登记或裁决后自动入链）',
-    };
-  }
+  // 网络侧虚拟类（NetPort/Vlan/NetPeer/IpAddr）已随 cipipe 依赖一并移除：
+  // 这些节点表达的是 ARP/CDP 运行态观测，不属于 CMDB 配置关系。
   if (className === 'Rack' || className === 'Room') {
     return rackRoomChain(className, name);
   }
@@ -742,17 +706,10 @@ export async function getCiChain(params: {
         extra: fieldStr(r.fields, 'description'),
       });
     }
-    // ② cipipe ARP 邻接：端口与 VLAN 虚拟节点（host 键：iTop 名 = 管理 IP）
+    // ② 交换机邻接（CMDB）：上联/下联交换机 + 接入本机的终端
+    //    ARP 端口/VLAN 虚拟节点已移除 —— 那是运行态观测，按架构定位总纲不进
+    //    CMDB，消费端也不该出现（2026-11-28 用户定调只从 iTop 消费）。
     const host = selfIp || name;
-    const obs = await fetchNetobsByHost(host);
-    if (obs.length === 0 && host !== name) {
-      // 名称不是纯 IP 的设备（博科FC交换机6505-10.240.1.241）：再按名称尾部的 IP 试一次
-      const ipTail = name.match(/(\d{1,3}(?:\.\d{1,3}){3})$/);
-      if (ipTail) obs.push(...(await fetchNetobsByHost(ipTail[1])));
-    }
-    children.push(...netobsAdjacencyChildren(obs, host));
-    // ③ CDP 设备级邻接（cipipe netlinks 拓扑）：交换机↔交换机/路由器的
-    //    物理链路层级（接入→汇聚→核心→出口），按 BFS 层级分下联/互联/上联
     try {
       const cdp = await cdpPeerNodes(host);
       const seenCdp = new Set(children.map(c => `${c.class}:${c.name}`));
@@ -902,73 +859,7 @@ async function vlanDescriptions(): Promise<Map<string, string>> {
   return m;
 }
 
-/**
- * 一组观测 → 下一节点列表：
- *   unique/dedup 且具名 → 已裁决 CI（可继续递归展开）；
- *   其余 → IpAddr 叶子（conflict=冲突待裁决，none=未落 CMDB）。
- */
-function nextHopNodes(rows: NetobsRow[]): CiChainNode[] {
-  const out: CiChainNode[] = [];
-  const seenCi = new Set<string>();
-  const seenIp = new Set<string>();
-  for (const r of rows) {
-    if ((r.match_kind === 'unique' || r.match_kind === 'dedup') && r.ci_name) {
-      const k = `${r.ci_class}:${r.ci_name}`;
-      if (!seenCi.has(k)) {
-        seenCi.add(k);
-        out.push({ class: r.ci_class || 'FunctionalCI', name: r.ci_name, relation: '邻接下一跳', ip: r.ip || undefined });
-      }
-      continue;
-    }
-    if (!r.ip || seenIp.has(r.ip)) continue;
-    seenIp.add(r.ip);
-    out.push({
-      class: 'IpAddr',
-      name: r.ip,
-      relation: r.match_kind === 'conflict' ? '冲突邻接（cipipe 待裁决）' : '未裁决邻接（未落 CMDB）',
-      extra: r.mac || undefined,
-    });
-  }
-  return out;
-}
 
-/** 网络设备 children 追加：端口节点 + VLAN 节点（观测态，端口按自然序、VLAN 按数值序） */
-function netobsAdjacencyChildren(obs: NetobsRow[], host: string): CiChainNode[] {
-  const out: CiChainNode[] = [];
-  if (obs.length === 0) return out;
-
-  const byPort = groupByIfname(obs);
-  const byVid = groupByVid(obs);
-
-  // 端口节点（VLAN 接口 VlNNN 也是「端口」，与物理口一起展示）
-  const portNames = [...byPort.keys()].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-  for (const p of portNames) {
-    const rows = byPort.get(p) ?? [];
-    const vids = [...new Set(rows.map(r => r.vid).filter(Boolean))];
-    const hosts = new Set(rows.map(r => r.ip).filter(Boolean)).size;
-    out.push({
-      class: 'NetPort',
-      name: `${p}@${host}`,
-      relation: /^Vl\d+$/.test(p) ? 'VLAN 接口（SVI）' : '端口（ARP 邻接）',
-      extra: [vids.length ? `VLAN ${vids.join('/')}` : '', hosts ? `${hosts} 个邻接` : ''].filter(Boolean).join(' · ') || undefined,
-      ip: host,
-    });
-  }
-
-  // VLAN 节点
-  const vids = [...byVid.keys()].sort((a, b) => Number(a) - Number(b));
-  for (const v of vids) {
-    const rows = byVid.get(v) ?? [];
-    const hosts = new Set(rows.map(r => r.ip).filter(Boolean)).size;
-    out.push({
-      class: 'Vlan',
-      name: `${v}@${host}`,
-      relation: `VLAN ${v}`,
-      extra: hosts ? `${hosts} 个邻接` : undefined,
-    });
-  }
-  return out;
-}
 
 // ============================================================
 // CDP 网络链路层级（设备级邻接：接入 → 汇聚 → 核心 → 出口）
@@ -1000,166 +891,51 @@ async function networkDeviceNamesByIps(ips: string[]): Promise<Map<string, strin
 }
 
 /**
- * 某设备的 CDP 设备级邻接（下联/互联 → children；上联 → parents）。
- * 层级判定用 cipipe BFS 分层：对端层 > 本层 = 下联；相等 = 互联（双向展示）；
- * 小于 = 上联。单侧 CDP 观测（对端未纳管）→ NetPeer 叶子。
+ * 某交换机的邻接（CMDB）：上联 → parents，下联 + 接入终端 → children。
+ *
+ * 2026-11-28 架构修正：此前读 cipipe `fetchNetlinksTopology`（CDP 观测 +
+ * BFS 分层）。现读 iTop `lnkConnectableCIToNetworkDevice` —— 互联关系由
+ * cipipe `netadj cdp` 写入，层级由本端按「无上联者=层 0」递归算出。
  */
 async function cdpPeerNodes(selfIp: string): Promise<{ children: CiChainNode[]; parents: CiChainNode[] }> {
   const children: CiChainNode[] = [];
   const parents: CiChainNode[] = [];
   if (!selfIp) return { children, parents };
-  const topo: NetlinkTopology = await fetchNetlinksTopology();
-  if (topo.nodes.length === 0) return { children, parents };
 
-  const selfLayer = topo.layer_of[selfIp];
-  const neighborIps = new Set<string>();
-  const edgePorts = new Map<string, string[]>();
-  for (const e of topo.edges) {
-    const peer = e.a === selfIp ? e.b : (e.b === selfIp ? e.a : null);
-    if (!peer) continue;
-    neighborIps.add(peer);
-    edgePorts.set(peer, e.ports.map(extractPortPair));
-  }
-  // 单侧观测：本机端口 CDP 看到、但未参与采集的对端（路由器/未纳管交换机等）
-  const singles = new Map<string, NetlinkUnconfirmedAgg>();
-  for (const u of topo.unconfirmed) {
-    if (u.src !== selfIp || !u.peer || u.peer === '?') continue;
-    const agg = singles.get(u.peer) ?? { peer: u.peer, ports: new Set<string>(), platform: u.platform };
-    if (u.port) agg.ports.add(u.port);
-    if (!agg.platform && u.platform) agg.platform = u.platform;
-    singles.set(u.peer, agg);
-  }
+  const nb = await cmdbNdNeighbors(selfIp).catch((err: unknown) => {
+    logger.warn(`ciChain: CMDB 邻接读取失败 ${(err as Error).message}`);
+    return { upstream: [], downstream: [], attached: [] };
+  });
 
-  let ip2name = new Map<string, string>();
-  try {
-    ip2name = await networkDeviceNamesByIps([...neighborIps]);
-  } catch (err) {
-    logger.warn(`ciChain networkDeviceNamesByIps failed: ${(err as Error).message}`);
+  for (const u of nb.upstream) {
+    parents.push({
+      class: 'NetworkDevice',
+      name: u.name,
+      relation: `上联交换机（L${u.layer ?? 0}）`,
+      extra: `网络层级 L${u.layer ?? 0}`,
+    });
   }
-
-  for (const ip of neighborIps) {
-    const peerLayer = topo.layer_of[ip];
-    const mapped = ip2name.get(ip);
-    const node = topo.nodes.find(n => n.ip === ip);
-    const ports = edgePorts.get(ip)?.join(' · ');
-    if (selfLayer == null || peerLayer == null || peerLayer > selfLayer) {
-      children.push({
-        class: mapped ? 'NetworkDevice' : 'NetPeer',
-        name: mapped || `${node?.name || ip}@${ip}`,
-        relation: 'CDP 下联',
-        ip,
-        extra: ports,
-      });
-    } else if (peerLayer === selfLayer) {
-      children.push({ class: mapped ? 'NetworkDevice' : 'NetPeer', name: mapped || `${node?.name || ip}@${ip}`, relation: 'CDP 互联', ip, extra: ports });
-      parents.push({ class: mapped ? 'NetworkDevice' : 'NetPeer', name: mapped || `${node?.name || ip}@${ip}`, relation: 'CDP 互联', ip, extra: ports });
-    } else {
-      parents.push({ class: mapped ? 'NetworkDevice' : 'NetPeer', name: mapped || `${node?.name || ip}@${ip}`, relation: 'CDP 上联', ip, extra: ports });
-    }
-  }
-  for (const agg of singles.values()) {
+  for (const d of nb.downstream) {
     children.push({
-      class: 'NetPeer',
-      name: agg.peer,
-      relation: 'CDP 邻接（未纳管）',
-      extra: [agg.platform, agg.ports.size ? `本机 ${[...agg.ports].join('/')}` : '']
-        .filter(Boolean).join(' · ') || undefined,
+      class: 'NetworkDevice',
+      name: d.name,
+      relation: `下联交换机（L${d.layer ?? 0}）`,
+      extra: `网络层级 L${d.layer ?? 0}`,
+    });
+  }
+  // 接入的终端设备（Server 等）也作为下联展示，端口来自 CMDB
+  for (const a of nb.attached.slice(0, 30)) {
+    children.push({
+      class: 'Server',
+      name: a.name,
+      relation: a.port ? `接入端口（${a.port}）` : '接入本机',
     });
   }
   return { children, parents };
 }
 
-interface NetlinkUnconfirmedAgg {
-  peer: string;
-  ports: Set<string>;
-  platform: string | null;
-}
 
-/** NetPeer 展开：cipipe 拓扑已纳管（devid@ip）→ 列其 CDP 邻接；未纳管 → 叶子 */
-async function netPeerChain(encoded: string): Promise<CiChain> {
-  const dec = decodeNetobsKey(encoded);
-  if (!dec) {
-    return {
-      self: { class: 'NetPeer', name: encoded },
-      parents: [],
-      children: [],
-      source: 'none',
-      degraded: 'CDP 单侧观测的未纳管设备（不在 cipipe 采集清单；如需纳管请加入 netlink 采集主机列表）',
-    };
-  }
-  const ip = dec.host;
-  const topo = await fetchNetlinksTopology();
-  const node = topo.nodes.find(n => n.ip === ip);
-  if (!node) {
-    return { self: null, parents: [], children: [], source: 'none', degraded: `cipipe CDP 拓扑中未找到 ${ip}` };
-  }
-  const { children, parents } = await cdpPeerNodes(ip);
-  return {
-    self: { class: 'NetPeer', name: node.name, ip, extra: node.layer != null ? `网络层级 L${node.layer}` : '未连通（孤立设备）' },
-    parents,
-    children,
-    source: 'local',
-  };
-}
 
-/** NetPort 展开：端口信息卡 + 端口 VLAN + 邻接下一跳 */
-async function netPortChain(encoded: string): Promise<CiChain> {
-  const dec = decodeNetobsKey(encoded);
-  if (!dec) {
-    return { self: null, parents: [], children: [], source: 'none', degraded: '端口节点名称格式异常（应为 端口@交换机）' };
-  }
-  const { key: ifname, host } = dec;
-  const obs = (await fetchNetobsByHost(host)).filter(r => r.ifname === ifname);
-  const children: CiChainNode[] = [];
-  if (obs.length === 0) {
-    return {
-      self: { class: 'NetPort', name: ifname, ip: host },
-      parents: [{ class: 'NetworkDevice', name: host, relation: '所属交换机' }],
-      children: [],
-      source: 'none',
-      degraded: 'cipipe 无该端口的 ARP 观测',
-    };
-  }
-  // 端口承载的 VLAN（多 vid = trunk 口）
-  for (const v of [...new Set(obs.map(r => r.vid).filter(Boolean))].sort((a, b) => Number(a) - Number(b))) {
-    children.push({ class: 'Vlan', name: `${v}@${host}`, relation: '端口 VLAN' });
-  }
-  children.push(...nextHopNodes(obs));
-  return {
-    self: { class: 'NetPort', name: ifname, ip: host, extra: `${obs.length} 条 ARP 观测` },
-    parents: [{ class: 'NetworkDevice', name: host, relation: '所属交换机' }],
-    children,
-    source: 'local',
-  };
-}
-
-/** Vlan 展开：VLAN 命名（iTop 裁决名）+ 该 VLAN 内邻接下一跳 */
-async function vlanChain(encoded: string): Promise<CiChain> {
-  const dec = decodeNetobsKey(encoded);
-  if (!dec) {
-    return { self: null, parents: [], children: [], source: 'none', degraded: 'VLAN 节点名称格式异常（应为 vid@交换机）' };
-  }
-  const { key: vid, host } = dec;
-  const obs = (await fetchNetobsByHost(host)).filter(r => r.vid === vid);
-  let vlanName: string | undefined;
-  try {
-    vlanName = (await vlanDescriptions()).get(vid);
-  } catch {
-    vlanName = undefined; // iTop VLAN 命名不可得时退回纯 vid 展示
-  }
-  const children = obs.length > 0 ? nextHopNodes(obs) : [];
-  return {
-    self: {
-      class: 'Vlan',
-      name: vlanName ? `VLAN ${vid} · ${vlanName}` : `VLAN ${vid}`,
-      extra: obs.length ? `${obs.length} 条 ARP 观测` : undefined,
-    },
-    parents: [{ class: 'NetworkDevice', name: host, relation: '观测交换机' }],
-    children,
-    source: obs.length > 0 ? 'local' : 'none',
-    degraded: obs.length === 0 ? 'cipipe 无该交换机在此 VLAN 的观测' : undefined,
-  };
-}
 
 // ============================================================
 // 槽位设备 → iTop CI 解析
