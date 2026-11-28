@@ -150,9 +150,9 @@ export default function CmdbTopology() {
       {tab === 'topology' && (
         <>
           <div className="mb-3 rounded-lg border border-dashed border-cyan-500/30 bg-cyan-500/5 px-3 py-2 text-[11.5px] text-text-secondary leading-relaxed">
-            以一台 CI 为中心，<b>六条关系轴同时展开</b>（宿主 / 网络 / 存储 / 数据库 / 位置 / 运行层），
-            不再按轴分屏。双击任意节点即可把它挪到中心继续探索 —— 这样能把「它在哪、接哪、跑什么」一次看全。
-            网络邻接读自 CMDB（cipipe 治理后写入 iTop），虚机的网络位置经宿主链推导（虚机无物理端口，iTop 模型如此）。
+            <b>树状展开</b>：中心 CI 在左，六条关系轴（宿主 / 网络 / 存储 / 数据库 / 位置 / 运行层）
+            按层向右生长，同轴相邻、连线正交不交叉。单击节点看右侧<b>平级列表</b>（含被树折叠的全部关系），
+            双击把它挪到中心重新展开。网络邻接读自 CMDB（cipipe 治理后写入 iTop）。
           </div>
           <CiRelationExplorer nodes={graph.nodes} edges={graph.edges} />
         </>
